@@ -33,14 +33,17 @@ export function bridgeSource(project: Project, metadata: { file?: string; line?:
   try { permittedPath(project, metadata.file); } catch { return []; }
   return [{ file: metadata.file.replaceAll('\\', '/'), line: Math.max(1, Math.min(100000, Number(metadata.line) || 1)), component: metadata.component, provenance: 'instrumented', reason: 'Opt-in data-dcr-source metadata supplied by the application; not compiler-verified' }];
 }
-export async function elementFacts(page: Page, selector: string, bridgeEnabled: boolean) {
+export async function elementFacts(page: Page, selector: string, bridgeEnabled: boolean, maskSelectors: string[] = []) {
   const locator = page.locator(selector).first(); await locator.waitFor({ state: 'visible' });
-  return locator.evaluate((element, bridge) => {
-    const style = getComputedStyle(element), owner = bridge ? element.closest('[data-dcr-source]') : null;
-    const privateElement = !!element.closest('input,textarea,[data-private],[autocomplete]');
-    const visibleText = element.cloneNode(true) as Element; visibleText.querySelectorAll('input,textarea,[data-private],[autocomplete],script,style').forEach(el => el.remove());
-    return { selector: '', tag: element.tagName.toLowerCase(), text: privateElement ? '[PRIVATE]' : (visibleText.textContent || '').slice(0, 500), attributes: Object.fromEntries(['id', 'class', 'role', 'type', 'aria-label'].map(k => [k, element.getAttribute(k)])), styles: Object.fromEntries(['color', 'background-color', 'font-size', 'padding', 'margin', 'border-radius', 'display'].map(k => [k, style.getPropertyValue(k)])), bounds: element.getBoundingClientRect().toJSON(), metadata: owner ? { file: owner.getAttribute('data-dcr-source') || undefined, line: owner.getAttribute('data-dcr-line') || undefined, component: owner.getAttribute('data-dcr-component') || undefined } : {}, instrumentation: owner ? { route: owner.getAttribute('data-dcr-route'), handler: owner.getAttribute('data-dcr-handler'), state: owner.getAttribute('data-dcr-state') } : null };
-  }, bridgeEnabled);
+  return locator.evaluate((element, options) => {
+    const privacySelector = ['input', 'textarea', '[data-private]', '[autocomplete]', ...options.maskSelectors].join(',');
+    const privateElement = !!element.closest(privacySelector);
+    const style = getComputedStyle(element), candidate = options.bridgeEnabled ? element.closest('[data-dcr-source]') : null;
+    const owner = !privateElement && candidate && !candidate.closest(privacySelector) ? candidate : null;
+    const visibleText = element.cloneNode(true) as Element, originals = [...element.querySelectorAll('*')], copies = [...visibleText.querySelectorAll('*')];
+    originals.forEach((node, i) => { if (node.matches(privacySelector + ',script,style')) copies[i].remove(); });
+    return { selector: '', tag: element.tagName.toLowerCase(), text: privateElement ? '[PRIVATE]' : (visibleText.textContent || '').slice(0, 500), attributes: privateElement ? {} : Object.fromEntries(['id', 'class', 'role', 'type', 'aria-label'].map(k => [k, element.getAttribute(k)])), styles: Object.fromEntries(['color', 'background-color', 'font-size', 'padding', 'margin', 'border-radius', 'display'].map(k => [k, style.getPropertyValue(k)])), bounds: element.getBoundingClientRect().toJSON(), metadata: owner ? { file: owner.getAttribute('data-dcr-source') || undefined, line: owner.getAttribute('data-dcr-line') || undefined, component: owner.getAttribute('data-dcr-component') || undefined } : {}, instrumentation: owner ? { route: owner.getAttribute('data-dcr-route'), handler: owner.getAttribute('data-dcr-handler'), state: owner.getAttribute('data-dcr-state') } : null };
+  }, { bridgeEnabled, maskSelectors });
 }
 export async function scanDrift(page: Page, rules: DriftRule[]) {
   return page.evaluate(rules => {
@@ -56,7 +59,13 @@ export async function scanDrift(page: Page, rules: DriftRule[]) {
           let value = token;
           if (/^var\(--[\w-]+\)$/.test(token)) value = style.getPropertyValue(token.slice(4, -1)).trim();
           if (!value || !CSS.supports(rule.property, value)) throw new Error(`Unresolved or invalid token ${token} for ${rule.name}`);
-          const probe = document.createElement('span'); probe.style.setProperty(rule.property, value); probe.style.position = 'absolute'; probe.style.visibility = 'hidden'; element.parentElement?.append(probe); const normalized = getComputedStyle(probe).getPropertyValue(rule.property).trim(); probe.remove(); return { reference: token, value: normalized };
+          // Resolve relative units/currentColor against the actual element. Restore
+          // its exact inline style before collecting evidence or testing another value.
+          const original = element.getAttribute('style'), target = element as HTMLElement;
+          let normalized: string;
+          try { target.style.setProperty('transition', 'none', 'important'); target.style.setProperty(rule.property, value, 'important'); normalized = getComputedStyle(element).getPropertyValue(rule.property).trim(); }
+          finally { if (original === null) element.removeAttribute('style'); else element.setAttribute('style', original); }
+          return { reference: token, value: normalized };
         });
         const allowed = expected.some(e => e.value === observed || /^-?\d+(?:\.\d+)?px$/.test(e.value) && /^-?\d+(?:\.\d+)?px$/.test(observed) && Math.abs(parseFloat(e.value) - parseFloat(observed)) <= rule.tolerance);
         if (!allowed) {

@@ -61,7 +61,7 @@ export class UnderstandingCommands {
     this.begin(projectId, report.id);
     try {
       return await inspectPage(project, data.route, async page => {
-        const facts = await elementFacts(page, data.selector, project.config.understanding.bridgeEnabled);
+        const facts = await elementFacts(page, data.selector, project.config.understanding.bridgeEnabled, project.config.maskSelectors);
         if (facts.instrumentation?.state) { try { facts.instrumentation.state = JSON.stringify(redact(JSON.parse(facts.instrumentation.state), project.config.redactFields)); } catch { facts.instrumentation.state = redact(facts.instrumentation.state, project.config.redactFields); } }
         report.sources = bridgeSource(project, facts.metadata);
         report.data = { ...facts, selector: data.selector, route: page.url(), provenance: 'observed', sourceConfidence: report.sources.length ? 'Application-supplied instrumentation' : 'Unknown: no verified source mapping', instrumentation: facts.instrumentation, limitations: ['DOM styles and attributes are observed facts.', 'State and handler labels are application-supplied metadata, not inspected React internals.', 'No API causality is inferred from temporal proximity.'] };

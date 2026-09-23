@@ -1,12 +1,16 @@
 import { readFileSync, statSync } from 'node:fs';
+import { relative } from 'node:path';
 import type { Project } from '../../core/src/index.ts';
 import { safeSource } from './index.ts';
 import { redactText } from '../../core/src/redact.ts';
 
 export function permittedPath(project: Project, path: string) {
-  const normalized = path.replaceAll('\\', '/');
-  if (/(^|\/)(\.env(?:\..*)?|\.git|node_modules|\.dcr)(\/|$)|\.(pem|key|p12|pfx)$/i.test(normalized) || project.config.ignorePaths.some(p => normalized.includes(p.replaceAll('\\', '/')))) throw new Error('Source path is excluded by project privacy rules');
-  return safeSource(project.path, normalized);
+  const normalize = (value: string) => process.platform === 'win32' ? value.replaceAll('\\', '/').toLowerCase() : value.replaceAll('\\', '/');
+  const excluded = (value: string) => /(^|\/)(\.env(?:\..*)?|\.git|node_modules|\.dcr)(\/|$)|\.(pem|key|p12|pfx)$/i.test(value) || project.config.ignorePaths.some(p => normalize(value).includes(normalize(p)));
+  if (excluded(path.replaceAll('\\', '/'))) throw new Error('Source path is excluded by project privacy rules');
+  const resolved = safeSource(project.path, path);
+  if (excluded(relative(project.path, resolved).replaceAll('\\', '/'))) throw new Error('Resolved source path is excluded by project privacy rules');
+  return resolved;
 }
 export function sourceText(project: Project, path: string) {
   const file = permittedPath(project, path);
