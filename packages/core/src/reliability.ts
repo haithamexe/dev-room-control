@@ -1,18 +1,20 @@
 import { z } from 'zod';
+export type StripeEvidence = { provider: 'stripe-test'; paymentIntentId: string; state: string; amount: number; currency: string };
 
 export const endpointPath = z.string().regex(/^\/(?!\/)[^?#]*$/, 'Use an absolute path without a query or fragment');
-export const paymentCases = ['back-after-success', 'refresh-after-success', 'duplicate-confirmation'] as const;
+export const paymentCases = ['back-after-success', 'refresh-after-success', 'duplicate-confirmation', 'forward-after-success', 'reopen-success', 'two-tabs', 'session-expiry', 'delayed-callback', 'failed-callback', 'refresh-before-confirmation'] as const;
 export const paymentAdapterSchema = z.object({
   kind: z.literal('fixture-http').default('fixture-http'),
   createPath: endpointPath.default('/__fixtures/orders'),
   statusPath: endpointPath.default('/__fixtures/orders/{orderId}'),
   confirmPath: endpointPath.default('/__fixtures/orders/{orderId}/confirm'),
+  eventsPath: endpointPath.default('/__fixtures/orders/{orderId}/events'),
   stateSelector: z.string().min(1).max(200).default('[data-payment-state]'),
   expectedText: z.string().min(1).max(200).default('Order confirmed'),
 });
 export const reliabilityConfigSchema = z.object({
   apiPaths: z.array(endpointPath).max(30).default([]),
-  payment: z.object({ testEnvironmentConfirmed: z.boolean().default(false), fixturesOnlyConfirmed: z.boolean().default(false), adapter: paymentAdapterSchema.default(() => paymentAdapterSchema.parse({})) }).default(() => ({ testEnvironmentConfirmed: false, fixturesOnlyConfirmed: false, adapter: paymentAdapterSchema.parse({}) })),
+  payment: z.object({ testEnvironmentConfirmed: z.boolean().default(false), fixturesOnlyConfirmed: z.boolean().default(false), adapter: paymentAdapterSchema.default(() => paymentAdapterSchema.parse({})), gateway: z.object({ provider: z.enum(['fixture', 'stripe-test']).default('fixture'), enabled: z.boolean().default(false), secretEnv: z.string().regex(/^[A-Z_][A-Z0-9_]*$/i).default('STRIPE_TEST_SECRET_KEY') }).default({ provider: 'fixture', enabled: false, secretEnv: 'STRIPE_TEST_SECRET_KEY' }) }).default(() => ({ testEnvironmentConfirmed: false, fixturesOnlyConfirmed: false, adapter: paymentAdapterSchema.parse({}), gateway: { provider: 'fixture' as const, enabled: false, secretEnv: 'STRIPE_TEST_SECRET_KEY' } })),
 });
 export const mutationKinds = ['missing-field', 'null-field', 'empty-list', 'oversized-string', 'unauthorized', 'server-error', 'delay'] as const;
 export const mutationSchema = z.object({ kind: z.enum(mutationKinds), pointer: z.string().max(300).default(''), delayMs: z.number().int().min(1).max(5000).default(800), stringLength: z.number().int().min(1).max(16000).default(4096) });
@@ -31,7 +33,7 @@ export type ScenarioDefinition =
   | { kind: 'api'; name: string; version: number; fixture: FixtureSnapshot; mutation: Mutation; expectedText: string }
   | { kind: 'payment'; name: string; version: number; paymentCase: typeof paymentCases[number]; adapter: PaymentAdapter };
 export type Scenario = { id: string; projectId: string; flowId: string; definition: ScenarioDefinition; createdAt: string; fixtureId?: string };
-export type Matrix = { id: string; ownerPid?: number; projectId: string; name: string; status: 'running' | 'completed' | 'failed'; runIds: string[]; scenarioIds: string[]; createdAt: string; endedAt?: string; error?: string };
+export type Matrix = { id: string; ownerPid?: number; projectId: string; name: string; status: 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted'; runIds: string[]; scenarioIds: string[]; nextIndex?: number; plans?: { scenario: Scenario; flow: import('./index.ts').Flow }[]; createdAt: string; endedAt?: string; error?: string };
 export type ScenarioResult = { expected: unknown; observed: unknown; matchedRequests?: number; fixtureId?: string; orderId?: string; passed: boolean };
 
 // Exact JSON Pointer traversal; only existing own properties may be changed.

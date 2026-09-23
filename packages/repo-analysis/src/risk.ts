@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import type { Project, Run, RunEvent } from '../../core/src/index.ts';
 import { permittedPath } from './sources.ts';
 import { git } from './index.ts';
+import { importResolver } from './imports.ts';
 
 export function riskMap(project: Project, base: string, runs: Run[], events: RunEvent[]) {
   if (!/^[\w./~^@{}-]{1,120}$/.test(base) || base.startsWith('-')) throw new Error('Use a Git revision such as HEAD or main');
@@ -28,12 +29,7 @@ export function riskMap(project: Project, base: string, runs: Run[], events: Run
   const known = new Set(files);
   const imports: { from: string; to: string; provenance: 'static'; reason: string }[] = [];
   const routes: { path: string; file: string; provenance: 'static' | 'heuristic'; reason: string }[] = [];
-  const resolveImport = (file: string, spec: string) => {
-    if (!spec.startsWith('.')) { if (spec.startsWith('@/') || spec.startsWith('~/')) gaps.push(`${file}: unresolved path alias ${spec}`); return; }
-    const stem = relative(project.path, resolve(project.path, dirname(file), spec)).replaceAll('\\', '/');
-    const candidates = [stem, ...['.ts', '.tsx', '.js', '.jsx', '.mjs', '.mts'].map(ext => stem + ext), ...['/index.ts', '/index.tsx', '/index.js', '/index.jsx'].map(ext => stem + ext), stem.replace(/\.js$/, '.ts'), stem.replace(/\.js$/, '.tsx')];
-    return candidates.find(c => known.has(c));
-  };
+  const resolveImport = importResolver(project, files, gaps);
   for (const file of files) {
     const source = ts.createSourceFile(file, readFileSync(join(project.path, file), 'utf8'), ts.ScriptTarget.Latest, true, file.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
     if ((source as any).parseDiagnostics?.length) gaps.push(`${file}: parser diagnostics; graph may be incomplete`);

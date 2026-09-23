@@ -21,10 +21,16 @@ export async function serveLabs(req: IncomingMessage, res: ServerResponse, fixed
         if (orders.size >= 1000) orders.delete(orders.keys().next().value!);
         const order: FixtureOrder = { id: body.id, state: 'pending', confirmationCount: 0 }; orders.set(order.id, order); send(order, 201);
       } else {
-        const match = path.match(/^\/__fixtures\/orders\/([A-Za-z0-9_-]+)(\/confirm)?$/), order = match ? orders.get(match[1]) : undefined;
+        const match = path.match(/^\/__fixtures\/orders\/([A-Za-z0-9_-]+)(\/(?:confirm|events))?$/), order = match ? orders.get(match[1]) : undefined;
         if (!order) send({ error: 'Unknown fixture order' }, 404);
         else if (!match![2] && req.method === 'GET') send(order);
-        else if (match![2] && req.method === 'POST') {
+        else if (match![2] === '/events' && req.method === 'POST') {
+          const body = await jsonBody(req); if (!['delayed-callback', 'failed-callback'].includes(body.type) || body.eventId !== `confirmation-${order.id}`) throw new Error('Unsupported fixture callback');
+          if (body.type === 'delayed-callback') await new Promise(resolve => setTimeout(resolve, 300));
+          if (!fixed) { if (body.type === 'failed-callback') order.state = 'pending'; else order.confirmationCount++; }
+          send(order);
+        }
+        else if (match![2] === '/confirm' && req.method === 'POST') {
           const body = await jsonBody(req); if (body.eventId !== `confirmation-${order.id}`) throw new Error('Expected this order’s fixture confirmation event');
           if (!fixed || order.state !== 'confirmed') order.confirmationCount++;
           order.state = 'confirmed'; send(order);

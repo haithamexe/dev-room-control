@@ -12,13 +12,15 @@ import { ReliabilityCommands } from './reliability.ts';
 import { assertScenario } from '../../core/src/reliability-policy.ts';
 import { paymentCases, type ScenarioDefinition, type Scenario, type ApiFixture } from '../../core/src/reliability.ts';
 import { UnderstandingCommands } from './understanding.ts';
+import { RunWorkers } from './workers.ts';
 
 export class ControlRoom extends EventEmitter {
   active = new Map<string, Promise<Run>>();
   processes = new Set<ReturnType<typeof spawn>>();
   reliability: ReliabilityCommands;
   understanding: UnderstandingCommands;
-  constructor(public store: Store) { super(); this.reliability = new ReliabilityCommands(store, (flow, scenario, scenarioId) => this.startRun(flow, scenario, undefined, scenarioId), this.active); this.understanding = new UnderstandingCommands(store); this.recoverInterrupted(); }
+  workers: RunWorkers;
+  constructor(public store: Store) { super(); this.workers = new RunWorkers(store); this.reliability = new ReliabilityCommands(store, (flow, scenario, scenarioId) => this.startRun(flow, scenario, undefined, scenarioId), this.active, runId => this.workers.cancel(runId)); this.understanding = new UnderstandingCommands(store); this.recoverInterrupted(); }
   addProject(input: unknown) {
     const data = z.object({ name: z.string().min(1).max(100), path: z.string().min(1), baseUrl: z.url(), config: configSchema.optional() }).parse(input);
     const path = realpathSync(data.path); if (!statSync(path).isDirectory()) throw new Error('Choose a repository directory');
@@ -57,7 +59,7 @@ export class ControlRoom extends EventEmitter {
     if (this.active.size >= 2) throw new Error('Two runs are already active; wait for one to finish');
     assertScenario(project, scenario);
     const run = createRun(this.store, project, flow, replay, scenario.kind === 'baseline' ? undefined : scenario, scenarioId);
-    const promise = executeRun(this.store, project, run).then(result => { this.emit('run.completed', result); return result; }).finally(() => this.active.delete(run.id));
+    const promise = this.workers.start(project, run).then(result => { this.emit('run.completed', result); return result; }).finally(() => this.active.delete(run.id));
     this.active.set(run.id, promise); void promise.catch(() => {}); return run;
   }
   saveTask(projectId: string, input: unknown) {
@@ -99,7 +101,7 @@ export class ControlRoom extends EventEmitter {
         if (record.ownerPid) {
           try { process.kill(record.ownerPid, 0); continue; } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') continue; }
         } else if (!confirmLegacyStopped) continue;
-        record.status = 'failed'; record.endedAt = now(); record.error = 'Execution interrupted: its runner stopped before completion.';
+        record.status = table === 'matrices' ? 'interrupted' : 'failed'; record.endedAt = now(); record.error = 'Execution interrupted: its runner stopped before completion.';
         this.store.put(table, record); recovered++;
       }
     }
@@ -116,21 +118,21 @@ export class ControlRoom extends EventEmitter {
     this.store.deleteProject(projectId); return { deleted: true };
   }
   async seedDemo() {
-    const path = resolve('examples/demo-app');
+    const path = process.env.DCR_DEMO_PATH || resolve('examples/demo-app');
     let project = this.store.list<Project>('projects').find(p => p.path === realpathSync(path));
-    if (project) return project;
-    project = this.addProject({ name: 'Acme Storefront', path, baseUrl: 'http://127.0.0.1:4400', config: { commands: { dev: 'node --import tsx server.ts' } } });
+    if (project) { if (process.env.DCR_DEMO_URL) { project.baseUrl = process.env.DCR_DEMO_URL; this.store.put('projects', project); } return project; }
+    project = this.addProject({ name: 'Acme Storefront', path, baseUrl: process.env.DCR_DEMO_URL || 'http://127.0.0.1:4400', config: { commands: process.env.DCR_DEMO_PATH ? {} : { dev: 'node --import tsx server.ts' } } });
     const flow = this.saveFlow(project.id, { name: 'Complete checkout', description: 'Reproduce the demo confirmation failure, with a real 500 response and a failed assertion.', steps: [{ action: 'goto', url: '/' }, { action: 'click', role: 'button', name: 'Continue to checkout' }, { action: 'click', role: 'button', name: 'Confirm order' }, { action: 'assertText', text: 'Order confirmed' }] });
     this.saveFlow(project.id, { name: 'Browse the storefront', description: 'A healthy baseline for the demo app.', steps: [{ action: 'goto', url: '/' }, { action: 'assertText', text: 'The everyday collection' }] });
-    this.saveTask(project.id, { name: 'Fix checkout confirmation', files: ['server.ts'], urls: [project.baseUrl], command: 'dev', flowId: flow.id, branch: 'fix/checkout', notes: 'Inspect the confirmation request and rerun Complete checkout. The demo supports DEMO_FIXED=1 to validate the correction.' });
+    this.saveTask(project.id, { name: 'Fix checkout confirmation', files: ['server.ts'], urls: [project.baseUrl], command: process.env.DCR_DEMO_PATH ? undefined : 'dev', flowId: flow.id, branch: 'fix/checkout', notes: 'Inspect the confirmation request and rerun Complete checkout. The demo supports DEMO_FIXED=1 to validate the correction.' });
     this.store.put('notes', { id: project.id, projectId: project.id, text: 'The confirmation endpoint returns 500. Start with the failed request in the latest checkout run.', nextStep: 'Inspect POST /api/confirm and the missing success state.' });
     return project;
   }
   setupDemoLabs(projectId: string, input: unknown) {
-    const { confirmFixtures } = z.object({ confirmFixtures: z.literal(true, { error: 'Explicitly confirm the included local fixture environment' }) }).parse(input);
+    const { confirmFixtures, includeAdvanced } = z.object({ includeAdvanced: z.boolean().default(false), confirmFixtures: z.literal(true, { error: 'Explicitly confirm the included local fixture environment' }) }).parse(input);
     let project = this.reliability.project(projectId);
-    if (project.path !== realpathSync(resolve('examples/demo-app')) || project.config.environment !== 'local') throw new Error('Automatic lab setup is only available for the included local demo repository');
-    project = this.saveConfig(projectId, { ...project.config, modules: [...new Set([...project.config.modules, 'api', 'payments'])], reliability: { apiPaths: [...new Set([...project.config.reliability.apiPaths, '/api/products'])], payment: { testEnvironmentConfirmed: confirmFixtures, fixturesOnlyConfirmed: confirmFixtures } } });
+    if (project.path !== realpathSync(process.env.DCR_DEMO_PATH || resolve('examples/demo-app')) || project.config.environment !== 'local') throw new Error('Automatic lab setup is only available for the included local demo repository');
+    project = this.saveConfig(projectId, { ...project.config, modules: [...new Set([...project.config.modules, 'api', 'payments'])], reliability: { apiPaths: [...new Set([...project.config.reliability.apiPaths, '/api/products'])], payment: { ...project.config.reliability.payment, testEnvironmentConfirmed: confirmFixtures, fixturesOnlyConfirmed: confirmFixtures } } });
     const findFlow = (name: string, steps: Flow['steps']) => this.store.list<Flow>('flows', projectId).find(flow => flow.name === name) || this.saveFlow(projectId, { name, steps });
     const capture = findFlow('Catalog fixture capture', [{ action: 'goto', url: '/catalog' }, { action: 'assertText', text: 'Catalog ready' }]);
     const api = findFlow('Catalog response resilience', [{ action: 'goto', url: '/catalog' }, { action: 'assertText', text: 'The catalog' }]);
@@ -147,7 +149,7 @@ export class ControlRoom extends EventEmitter {
       ['Delayed products', 'delay', '', 'Catalog ready'],
     ];
     for (const [name, kind, pointer, expectedText] of cases) if (!existing.some(s => s.definition.name === name)) this.reliability.saveScenario(projectId, { kind: 'api', name, flowId: api.id, fixtureId: fixture.id, mutation: { kind, pointer }, expectedText });
-    for (const paymentCase of paymentCases) if (!existing.some(s => s.definition.kind === 'payment' && s.definition.paymentCase === paymentCase)) this.reliability.saveScenario(projectId, { kind: 'payment', name: paymentCase.replaceAll('-', ' '), paymentCase, flowId: checkout.id });
+    for (const paymentCase of (includeAdvanced ? paymentCases : paymentCases.slice(0, 3))) if (!existing.some(s => s.definition.kind === 'payment' && s.definition.paymentCase === paymentCase)) this.reliability.saveScenario(projectId, { kind: 'payment', name: paymentCase.replaceAll('-', ' '), paymentCase, flowId: checkout.id });
     return { project, captureFlowId: capture.id, fixture, scenarios: this.store.list<Scenario>('scenarios', projectId) };
   }
 }

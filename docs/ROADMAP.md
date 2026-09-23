@@ -9,8 +9,14 @@ The shared project → flow → scenario → run → artifact → finding model 
 | 3 - implemented | PR Risk Map import graph and route adapters; token-based Design Drift; opt-in DOM/component source bridge | Observed, static and heuristic relationships are distinct; every finding has inspectable evidence |
 | 4 - implemented | Full Context Resurrection, richer task resume, optional VS Code extension | Reopening restores branch, failing flow, note and exact next step; editor command opens a referenced source file |
 
-Near-term Phase 1 hardening: installer packaging and signing; background-worker isolation/cancellation; richer visual flow editor; crash recovery for interrupted runs; process output/status for task commands; retention scheduler; explicit framework detection overrides. Interactive recording and importing arbitrary Playwright scripts are not part of the current JSON-flow importer.
+Original Phase 1 follow-ups (status below): installer packaging and signing; background-worker isolation/cancellation; richer visual flow editor; crash recovery for interrupted runs; process output/status for task commands; retention scheduler; explicit framework detection overrides. Version 0.2 adds interactive recording alongside the JSON-flow importer; arbitrary Playwright-script import remains separate future work.
 
 Modules declare commands and settings schemas alongside the existing catalog and return structured results plus core artifact references. They must preserve per-project target authorization and secret redaction before evidence persistence/export.
 
-Phase 2 follow-ups: background/restart-resumable matrix scheduling, additional API methods and request matching, schema-aware mutation selection, and separately reviewed sandbox gateway adapters. Current payment support is fixture-only.
+Phase 2 follow-ups: background/restart-resumable matrix scheduling, additional API methods and request matching, schema-aware mutation selection, and separately reviewed sandbox gateway adapters. The optional Stripe test probe and current boundaries are described below.
+
+## Local release 0.2.0
+
+Implemented: unsigned Windows installer and portable ZIP with embedded runtime/demo/browsers; worker isolation, cancellation, timeout and resumable matrix plans; Chromium/Firefox/WebKit selection; environment-backed login; interactive recording with review; all ten fixture payment cases; optional Stripe test PaymentIntent probe; Vite development JSX metadata; explicit handler/state/request scope evidence; TypeScript JSONC/baseUrl/paths resolution. See [advanced workflows and limits](ADVANCED.md) and [local release](LOCAL_RELEASE.md).
+
+Store product reserved via MSIX/PWA; submission, Store packaging and certification are deferred by the user. No code-signing certificate is needed for Store-managed MSIX signing after certification. The local EXE remains unsigned.

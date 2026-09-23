@@ -1,7 +1,18 @@
 const vscode = require('vscode');
 const path = require('node:path');
 const fs = require('node:fs');
-function base() { const port = vscode.workspace.getConfiguration('developerControlRoom').get('port', 4310); if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid local service port'); return `http://127.0.0.1:${port}`; }
+function base() {
+  const config = vscode.workspace.getConfiguration('developerControlRoom');
+  let port = config.get('port', 4310);
+  const explicit = config.inspect('port');
+  if (explicit?.globalValue === undefined && explicit?.workspaceValue === undefined && process.env.APPDATA) {
+    for (const name of ['Developer Control Room', 'developer-control-room']) {
+      try { const endpoint = JSON.parse(fs.readFileSync(path.join(process.env.APPDATA, name, 'service-endpoint.json'), 'utf8')); process.kill(endpoint.pid, 0); port = endpoint.port; break; } catch {}
+    }
+  }
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid local service port');
+  return `http://127.0.0.1:${port}`;
+}
 async function api(route, data) {
   const origin = base(); let headers = {};
   if (data) { const session = await fetch(`${origin}/api/session`, { redirect: 'error', signal: AbortSignal.timeout(5000) }); if (!session.ok) throw new Error('Local service unavailable'); headers = { 'Content-Type': 'application/json', 'X-DCR-Token': (await session.json()).token }; }

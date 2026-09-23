@@ -60,3 +60,22 @@ Reviewed independently against `11f80ad`, initial implementation `5ae6fcf`. Scop
 - **P2: correct relative tokens produced false drift.** Independently reproduced; fixed by resolving values in the target context.
 
 All three Standards findings and both Spec findings were addressed and independently verified. No additional concrete Phase 4 or general handoff scope omissions were identified. Validation: 21 focused tests; Phase 1, Phase 2 and Phase 3–4 browser gates; two native Electron cold starts with renderer sandbox enabled; a real VS Code command opening the referenced file/line; and successful VSIX installation into an isolated profile. The optional extension remains uninstalled in the user's normal editor profile.
+
+# Advanced functionality and local Windows release
+
+Reviewed against 426610e with independent Standards and Spec agents. User requested local Windows packaging, later reserved an MSIX/PWA Store product, and explicitly deferred submission.
+
+## Standards
+
+- Authenticated inspections could retain known login values. Fixed report/finding/handoff scrubbing and screenshot masking; real-browser privacy regression passes.
+- The packaged demo task depended on external Node/tsx. The packaged backend now embeds the demo server, stores editable sources in app data, retains its port, and omits that development-only command.
+- Random desktop ports broke the editor default. A per-user endpoint file now supports automatic editor discovery, preserving explicit port overrides.
+- Recorder metadata could retain typed values or private descendants, including a previously entered value after editing/clearing. Browser filtering and transient fingerprint history now protect all nonempty observed values; a full history stops capture safely. Private descendants and associated labels are excluded. Regression covers these cases and a normal replay.
+
+## Spec
+
+- Independently reproduced the authenticated-inspection and standalone-demo issues above; both fixed.
+- Recorder names ignored aria-labelledby. Name resolution now uses those references and warns for unsupported controls; accessible-name replay and privacy regressions pass.
+- Boundaries are documented in ADVANCED.md: explicit source/state instrumentation, bounded recording, and Stripe test probe do not claim automatic React ownership, arbitrary script import, or real checkout/webhook integration.
+
+Both agents confirmed the final focused fixes. All 29 original/added tests passed before the final recorder regression (which also passed independently), as did Phase 2 and Phase 3/4 gates. The packaged executable ran all three bundled browsers with Node removed from PATH; native screenshot/foreground validation subsequently passed; see LOCAL_RELEASE.md. The final matrix checkpoint regression also passed after the cancellation race fix.

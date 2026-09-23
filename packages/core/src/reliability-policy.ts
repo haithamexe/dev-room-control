@@ -15,7 +15,7 @@ export function assertPayment(project: Project, adapter?: PaymentAdapter) {
   const config = configSchema.parse(project.config), payment = config.reliability.payment;
   if (!payment.testEnvironmentConfirmed || !payment.fixturesOnlyConfirmed) throw new Error('Confirm a test environment and fixture-only payment adapter in project settings first');
   const selected = paymentAdapterSchema.parse(adapter || payment.adapter);
-  for (const key of ['createPath', 'statusPath', 'confirmPath'] as const) {
+  for (const key of ['createPath', 'statusPath', 'confirmPath', 'eventsPath'] as const) {
     if (selected[key] !== payment.adapter[key]) throw new Error('The saved payment adapter no longer matches the approved project configuration');
     const url = assertTarget(selected[key].replace('{orderId}', 'fixture-check'), project.baseUrl, config);
     if (!url.pathname.startsWith('/__fixtures/') || url.search || url.hash || config.ignoreUrls.some(value => url.href.includes(value))) throw new Error('Payment adapters must use allowed /__fixtures/ endpoints without query data');

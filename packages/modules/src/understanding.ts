@@ -3,7 +3,9 @@ import { createHash } from 'node:crypto';
 import { Store, id, now } from '../../storage/src/index.ts';
 import { configSchema, type Project, type Run, type RunEvent, type Finding } from '../../core/src/index.ts';
 import { driftRuleSchema, type Report, type SessionSnapshot, type SourceLink } from '../../core/src/understanding.ts';
-import { redact } from '../../core/src/redact.ts';
+import { redact, scrubInputs } from '../../core/src/redact.ts';
+import { authSecrets } from '../../runner/src/browser.ts';
+import { captureInteractions } from '../../runner/src/interactions.ts';
 import { snapshot } from '../../repo-analysis/src/index.ts';
 import { riskMap } from '../../repo-analysis/src/risk.ts';
 import { inspectPage, scanDrift, evidenceScreenshot, elementFacts, bridgeSource } from '../../runner/src/inspect.ts';
@@ -20,7 +22,7 @@ export class UnderstandingCommands {
   project(projectId: string, module?: string) { const p = this.store.get<Project>('projects', projectId); p.config = configSchema.parse(p.config); if (module && !p.config.modules.includes(module as any)) throw new Error(`Enable ${module} in project settings`); return p; }
   private report(project: Project, kind: Report['kind'], input: unknown): Report { return { id: id(), projectId: project.id, kind, name: `${kind} inspection`, createdAt: now(), git: redact(snapshot(project.path)), input, data: {}, sources: [], artifactIds: [] }; }
   private save(project: Project, report: Report) {
-    report.data = redact(report.data, project.config.redactFields); report.sources = redact(report.sources);
+    report = redact(scrubInputs(report, authSecrets(project)), project.config.redactFields);
     const artifact = this.store.artifact(project.id, report.id, `${report.kind}.json`, 'application/json', Buffer.from(JSON.stringify(report, null, 2))); report.artifactIds.push(artifact.id);
     return this.store.put('reports', report);
   }
@@ -48,7 +50,7 @@ export class UnderstandingCommands {
       const suppressions = this.store.list<any>('suppressions', projectId);
       const findings = [...groups.values()].map(group => {
         const suppression = suppressions.find(s => s.fingerprint === group.fingerprint);
-        const finding = this.store.put<Finding>('findings', redact({ id: id(), projectId, reportId: report.id, fingerprint: group.fingerprint, sources: group.sources, title: `${group.rule}: ${group.property} outside tokens`, expected: group.expected.map((e: any) => `${e.reference} = ${e.value}`).join(', ') + ` (tolerance ${group.tolerance}px)`, observed: `${group.observed} at ${group.selectors.join(', ')}`, status: suppression ? 'suppressed' : 'open', createdAt: now() }));
+        const finding = this.store.put<Finding>('findings', redact(scrubInputs({ id: id(), projectId, reportId: report.id, fingerprint: group.fingerprint, sources: group.sources, title: `${group.rule}: ${group.property} outside tokens`, expected: group.expected.map((e: any) => `${e.reference} = ${e.value}`).join(', ') + ` (tolerance ${group.tolerance}px)`, observed: `${group.observed} at ${group.selectors.join(', ')}`, status: suppression ? 'suppressed' : 'open', createdAt: now() }, authSecrets(project)), project.config.redactFields));
         return { ...group, findingId: finding.id, status: finding.status, disposition: suppression?.reason };
       });
       report.data = { findings, gaps, note: 'Only explicitly configured properties and selectors are checked. Repeated identical outliers on a route are grouped.' }; report.sources = findings.flatMap(f => f.sources);
@@ -56,8 +58,10 @@ export class UnderstandingCommands {
     } finally { this.end(projectId, report.id); }
   }
   async element(projectId: string, input: unknown) {
-    const data = z.object({ route: z.string().min(1), selector: z.string().min(1).max(500) }).parse(input), project = this.project(projectId, 'why');
+    const data = z.object({ route: z.string().min(1), selector: z.string().min(1).max(500), interact: z.boolean().default(false) }).parse(input), project = this.project(projectId, 'why');
     const report = this.report(project, 'element', data);
+    const interactions: Record<string, unknown>[] = []; let capturing = false, signal: (() => void) | undefined;
+    const observed = new Promise<void>(resolve => { signal = resolve; });
     this.begin(projectId, report.id);
     try {
       return await inspectPage(project, data.route, async page => {
@@ -65,11 +69,18 @@ export class UnderstandingCommands {
         if (facts.instrumentation?.state) { try { facts.instrumentation.state = JSON.stringify(redact(JSON.parse(facts.instrumentation.state), project.config.redactFields)); } catch { facts.instrumentation.state = redact(facts.instrumentation.state, project.config.redactFields); } }
         report.sources = bridgeSource(project, facts.metadata);
         report.data = { ...facts, selector: data.selector, route: page.url(), provenance: 'observed', sourceConfidence: report.sources.length ? 'Application-supplied instrumentation' : 'Unknown: no verified source mapping', instrumentation: facts.instrumentation, limitations: ['DOM styles and attributes are observed facts.', 'State and handler labels are application-supplied metadata, not inspected React internals.', 'No API causality is inferred from temporal proximity.'] };
-        delete report.data.metadata;
         await page.locator(data.selector).first().evaluate(el => { (el as HTMLElement).style.outline = '3px solid #15b88a'; });
+        if (data.interact) {
+          capturing = true; await page.locator(data.selector).first().click();
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          await Promise.race([observed, new Promise<void>(resolve => { timer = setTimeout(resolve, 5000); })]); if (timer) clearTimeout(timer);
+          report.data.interactions = interactions;
+          report.data.limitations.push(interactions.length ? 'Only requests explicitly routed through traceInteraction scope.request are associated. State comes from the application-provided getter.' : 'No completed instrumented interaction arrived within five seconds. Handler/state/request ownership remains unknown.');
+        }
+        delete report.data.metadata;
         const artifact = this.store.artifact(projectId, report.id, 'element.png', 'image/png', await evidenceScreenshot(page, project)); report.artifactIds.push(artifact.id);
         return this.save(project, report);
-      });
+      }, page => captureInteractions(page, project, evidence => { if (capturing) { interactions.push(evidence); signal?.(); } }));
     } finally { this.end(projectId, report.id); }
   }
   disposition(findingId: string, reason: 'suppressed' | 'intentional' | 'open') {

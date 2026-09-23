@@ -7,7 +7,7 @@ import { redact, redactText } from '../../core/src/redact.ts';
 
 export class ReliabilityCommands {
   activeMatrices = new Map<string, Promise<Matrix>>();
-  constructor(private store: Store, private start: (flow: Flow, scenario: ScenarioDefinition, scenarioId?: string) => Run, private active: Map<string, Promise<Run>>) {}
+  constructor(private store: Store, private start: (flow: Flow, scenario: ScenarioDefinition, scenarioId?: string) => Run, private active: Map<string, Promise<Run>>, private cancelRun: (runId: string) => unknown = () => {}) {}
   project(projectId: string) { const project = this.store.get<Project>('projects', projectId); return { ...project, config: configSchema.parse(project.config) }; }
   capture(projectId: string, input: unknown) {
     const data = z.object({ name: z.string().min(1).max(120), flowId: z.string().uuid(), url: z.url() }).parse(input);
@@ -57,15 +57,40 @@ export class ReliabilityCommands {
     const plans = data.scenarioIds.map(scenarioId => this.plan(scenarioId));
     if (plans.some(plan => plan.scenario.projectId !== projectId)) throw new Error('Matrix scenarios must belong to one project');
     if (this.activeMatrices.size >= 2) throw new Error('Two matrices are already active');
-    const matrix: Matrix = this.store.put('matrices', { id: id(), projectId, name: data.name, status: 'running', ownerPid: process.pid, runIds: [], scenarioIds: data.scenarioIds, createdAt: now() });
+    const matrix: Matrix = this.store.put('matrices', { id: id(), projectId, name: data.name, status: 'running', ownerPid: process.pid, runIds: [], scenarioIds: data.scenarioIds, plans, nextIndex: 0, createdAt: now() });
+    return this.schedule(matrix);
+  }
+  cancel(matrixId: string) {
+    const matrix = this.store.get<Matrix>('matrices', matrixId);
+    if (!this.activeMatrices.has(matrixId)) throw new Error('Matrix is not running in this service');
+    matrix.status = 'cancelled'; this.store.put('matrices', matrix);
+    const current = matrix.runIds.at(-1); if (current && this.active.has(current)) this.cancelRun(current);
+    return matrix;
+  }
+  resume(matrixId: string) {
+    const matrix = this.store.get<Matrix>('matrices', matrixId);
+    if (this.activeMatrices.size >= 2) throw new Error('Two matrices are already active');
+    if (!['interrupted', 'cancelled', 'failed'].includes(matrix.status) || !matrix.plans) throw new Error('Only interrupted/cancelled matrices with saved execution plans can resume');
+    for (const runId of matrix.runIds) if (this.store.get<Run>('runs', runId).status === 'running') throw new Error('A previous matrix run is still active');
+    matrix.status = 'running'; matrix.ownerPid = process.pid; delete matrix.endedAt; delete matrix.error; this.store.put('matrices', matrix);
+    return this.schedule(matrix);
+  }
+  private schedule(matrix: Matrix) {
     const job = (async () => {
       try {
-        for (const plan of plans) {
+        for (let index = matrix.nextIndex || 0; index < matrix.plans!.length; index++) {
           while (this.active.size >= 2) await Promise.race([...this.active.values()]).catch(() => {});
+          if (this.store.get<Matrix>('matrices', matrix.id).status === 'cancelled') { matrix.status = 'cancelled'; break; }
+          const plan = matrix.plans![index];
           const run = this.start(plan.flow, plan.scenario.definition, plan.scenario.id); matrix.runIds.push(run.id); this.store.put('matrices', matrix);
           await this.active.get(run.id);
+          const status = this.store.get<Run>('runs', run.id).status;
+          if (status === 'passed' || status === 'failed') matrix.nextIndex = index + 1;
+          if (this.store.get<Matrix>('matrices', matrix.id).status === 'cancelled') { matrix.status = 'cancelled'; break; }
+          if (status === 'cancelled') { matrix.status = 'cancelled'; break; }
+          this.store.put('matrices', matrix);
         }
-        matrix.status = 'completed';
+        if (matrix.status !== 'cancelled') matrix.status = 'completed';
       } catch (error) { matrix.status = 'failed'; matrix.error = String(error); }
       finally { matrix.endedAt = now(); this.store.put('matrices', matrix); this.activeMatrices.delete(matrix.id); }
       return matrix;

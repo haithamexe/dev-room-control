@@ -75,7 +75,7 @@ test('abandoned work recovers while live process ownership blocks deletion', asy
     store.put('matrices', { id: 'dead-matrix', projectId: project.id, status: 'running', ownerPid: deadPid });
     store.put('runs', { id: 'live', projectId: project.id, status: 'running', ownerPid: process.pid });
     new ControlRoom(store);
-    assert.equal(store.get<any>('runs', 'dead').status, 'failed'); assert.equal(store.get<any>('matrices', 'dead-matrix').status, 'failed');
+    assert.equal(store.get<any>('runs', 'dead').status, 'failed'); assert.equal(store.get<any>('matrices', 'dead-matrix').status, 'interrupted');
     assert.throws(() => service.deleteProject(project.id, project.name), /active runs/);
     store.put('runs', { id: 'live', projectId: project.id, status: 'passed', ownerPid: process.pid });
     store.put('runs', { id: 'legacy', projectId: project.id, status: 'running' });

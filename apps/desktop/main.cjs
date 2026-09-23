@@ -1,18 +1,47 @@
 const { app, BrowserWindow, shell, dialog } = require('electron');
 const { spawn } = require('node:child_process');
+const { createServer } = require('node:net');
+const { mkdirSync, openSync, closeSync, writeFileSync, unlinkSync } = require('node:fs');
 const path = require('node:path');
 let service;
-const dashboardUrl = `http://127.0.0.1:${Number(process.env.DCR_PORT || 4310)}`;
-app.whenReady().then(async () => {
-  const root = path.resolve(__dirname, '../..');
-  service = spawn(process.execPath, ['--import', 'tsx', 'apps/service/src/server.ts'], { cwd: root, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, windowsHide: true, stdio: 'ignore' });
-  let ready = false;
-  for (let attempt = 0; attempt < 50; attempt++) { try { const r = await fetch(`${dashboardUrl}/api/session`); if (r.ok) { ready = true; break; } } catch {} await new Promise(r => setTimeout(r, 200)); }
-  if (!ready) { dialog.showErrorBox('Local service could not start', 'Run npm start from the project directory to see the service error, then reopen the desktop app.'); app.quit(); return; }
-  const win = new BrowserWindow({ width: 1460, height: 950, minWidth: 960, minHeight: 650, backgroundColor: '#101312', title: 'Developer Control Room', autoHideMenuBar: true, webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true } });
-  win.webContents.setWindowOpenHandler(({ url }) => { if (/^(https?:|vscode:)/.test(url)) void shell.openExternal(url); return { action: 'deny' }; });
-  win.webContents.on('will-navigate', (event, url) => { if (new URL(url).origin !== dashboardUrl) { event.preventDefault(); if (/^(https?:|vscode:)/.test(url)) void shell.openExternal(url); } });
-  await win.loadURL(dashboardUrl);
-});
+let mainWindow;
+let endpointFile;
+const external = url => { if (/^(https?:|vscode:)/.test(url)) void shell.openExternal(url); };
+async function availablePort() {
+  if (process.env.DCR_PORT) return Number(process.env.DCR_PORT);
+  return new Promise((resolve, reject) => { const probe = createServer(); probe.on('error', reject); probe.listen(0, '127.0.0.1', () => { const port = probe.address().port; probe.close(() => resolve(port)); }); });
+}
+if (!app.requestSingleInstanceLock()) app.quit();
+else {
+  app.on('second-instance', () => { if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); } });
+  app.whenReady().then(async () => {
+    const root = app.isPackaged ? app.getAppPath() : path.resolve(__dirname, '../..');
+    const data = process.env.DCR_DATA_DIR || (app.isPackaged ? path.join(app.getPath('userData'), 'data') : path.join(root, '.dcr'));
+    mkdirSync(data, { recursive: true });
+    const logPath = path.join(data, 'service.log'), log = openSync(logPath, 'a');
+    const port = await availablePort(), dashboardUrl = `http://127.0.0.1:${port}`;
+    const launchId = require('node:crypto').randomUUID();
+    const env = { ...process.env, ELECTRON_RUN_AS_NODE: '1', DCR_PORT: String(port), DCR_DATA_DIR: data, DCR_LAUNCH_ID: launchId };
+    if (app.isPackaged) { env.DCR_WORKER_ENTRY = path.join(root, 'worker.mjs'); env.PLAYWRIGHT_BROWSERS_PATH = path.join(process.resourcesPath, 'browsers'); }
+    service = spawn(process.execPath, app.isPackaged ? [path.join(root, 'backend.mjs')] : ['--import', 'tsx', 'apps/service/src/server.ts'], { cwd: root, env, windowsHide: true, stdio: ['ignore', log, log] });
+    closeSync(log);
+    let failed = false;
+    service.on('error', () => { failed = true; });
+    service.on('exit', () => { failed = true; });
+    let ready = false;
+    for (let attempt = 0; attempt < 100 && !failed; attempt++) {
+      try { const response = await fetch(`${dashboardUrl}/api/session`, { signal: AbortSignal.timeout(1000) }); const body = await response.json(); if (response.ok && body.launchId === launchId) { ready = true; break; } } catch {}
+      await new Promise(resolve => setTimeout(resolve, 150));
+    }
+    if (!ready) { dialog.showErrorBox('Local service could not start', `Please reopen Developer Control Room. Startup details are saved in:\n${logPath}`); app.quit(); return; }
+    endpointFile = path.join(app.getPath('userData'), 'service-endpoint.json');
+    writeFileSync(endpointFile, JSON.stringify({ port, pid: process.pid }));
+    mainWindow = new BrowserWindow({ width: 1460, height: 950, minWidth: 960, minHeight: 650, backgroundColor: '#101312', title: 'Developer Control Room', autoHideMenuBar: true, webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true } });
+    mainWindow.webContents.setWindowOpenHandler(({ url }) => { external(url); return { action: 'deny' }; });
+    mainWindow.webContents.on('will-navigate', (event, url) => { if (new URL(url).origin !== dashboardUrl) { event.preventDefault(); external(url); } });
+    await mainWindow.loadURL(dashboardUrl);
+    service.on('exit', () => { if (mainWindow && !mainWindow.isDestroyed()) dialog.showErrorBox('Local service stopped', `Close and reopen the app to recover interrupted work. Details:\n${logPath}`); });
+  }).catch(error => { dialog.showErrorBox('Unable to open Developer Control Room', error.message); app.quit(); });
+}
 app.on('window-all-closed', () => app.quit());
-app.on('before-quit', () => service?.kill());
+app.on('before-quit', () => { mainWindow = undefined; service?.kill(); if (endpointFile) { try { unlinkSync(endpointFile); } catch {} } });

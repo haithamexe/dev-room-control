@@ -1,3 +1,4 @@
+import { captureInteractions } from './interactions.ts';
 import { chromium, type Browser, type BrowserContext } from 'playwright';
 import { zipSync, unzipSync, strFromU8, strToU8 } from 'fflate';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -10,6 +11,7 @@ import { snapshot } from '../../repo-analysis/src/index.ts';
 import { mutateFixture, type ApiFixture, type ScenarioDefinition } from '../../core/src/reliability.ts';
 import { assertScenario, assertApiTarget } from '../../core/src/reliability-policy.ts';
 import { preparePayment, checkPayment } from './payment.ts';
+import { engines, authState, authSecrets, login, performStep } from './browser.ts';
 
 // Raw Playwright network resources can contain credentials. Keep action records only.
 export function sanitizeTrace(bytes: Uint8Array, fields: string[], inputs: string[] = []) {
@@ -34,12 +36,13 @@ export function createRun(store: Store, project: Project, flow: Flow, replay?: R
   assertTarget(replay?.baseUrl || project.baseUrl, project.baseUrl, project.config);
   const definition: ScenarioDefinition = structuredClone(replay?.scenario || scenario || { kind: 'baseline', name: 'Baseline', version: 1 });
   if (definition.kind === 'api') definition.fixture.json = redact(definition.fixture.json, project.config.redactFields);
-  return store.put('runs', { id: id(), projectId: project.id, flowId: flow.id, name: replay?.name || (scenario ? `${flow.name} · ${scenario.name}` : flow.name), status: 'running', ownerPid: process.pid, startedAt: now(), baseUrl: replay?.baseUrl || project.baseUrl, flow: replay?.flow || { name: flow.name, description: flow.description, steps: flow.steps }, scenario: definition, scenarioId: replay?.scenarioId || scenarioId, git: snapshot(project.path), replayOf: replay?.id });
+  return store.put('runs', { id: id(), projectId: project.id, flowId: flow.id, name: replay?.name || (scenario ? `${flow.name} · ${scenario.name}` : flow.name), status: 'running', ownerPid: process.pid, startedAt: now(), baseUrl: replay?.baseUrl || project.baseUrl, flow: replay?.flow || { name: flow.name, description: flow.description, steps: flow.steps }, scenario: definition, browser: replay?.browser || project.config.browser, scenarioId: replay?.scenarioId || scenarioId, git: snapshot(project.path), replayOf: replay?.id });
 }
-export async function executeRun(store: Store, project: Project, run: Run) {
+export async function executeRun(store: Store, project: Project, run: Run, signal?: AbortSignal) {
   let browser: Browser | undefined, context: BrowserContext | undefined;
   const temp = mkdtempSync(join(tmpdir(), 'dcr-trace-'));
   const inputs = run.flow.steps.flatMap(step => step.action === 'fill' ? [step.env ? process.env[step.env] || '' : step.value || ''] : []).filter(Boolean);
+  const abort = () => { void context?.close().catch(() => {}); }; signal?.addEventListener('abort', abort);
   const event = (kind: RunEvent['kind'], title: string, data: Record<string, unknown> = {}) => store.put('events', { id: id(), runId: run.id, projectId: project.id, at: now(), kind, title: redactText(scrubInputs(title, inputs)), data: redact(scrubInputs(data, inputs), project.config.redactFields) });
   const pending = new Set<Promise<void>>();
   let activeStep = 'Launch browser';
@@ -50,6 +53,7 @@ export async function executeRun(store: Store, project: Project, run: Run) {
   let signalMutation: (() => void) | undefined;
   const mutationReady = new Promise<void>(resolve => { signalMutation = resolve; });
   const fail = (error: unknown) => {
+    if (signal?.aborted) { run.status = 'cancelled'; run.error = 'Cancelled by user'; event('marker', 'Run cancelled'); return; }
     run.status = 'failed'; run.error = redactText(scrubInputs(error instanceof Error ? error.message : String(error), inputs));
     event('error', `Failed at ${activeStep}`, { error: run.error });
     const finding = store.put('findings', { id: id(), projectId: project.id, runId: run.id, title: `${run.name} did not complete`, expected: activeStep, observed: run.error, status: 'open', createdAt: now() });
@@ -57,8 +61,11 @@ export async function executeRun(store: Store, project: Project, run: Run) {
   };
   try {
     assertScenario(project, run.scenario);
-    browser = await chromium.launch({ headless: true }); run.browserVersion = browser.version();
-    context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: 'en-US', timezoneId: 'UTC', serviceWorkers: 'block' });
+    signal?.throwIfAborted(); inputs.push(...authSecrets(project));
+    run.browser = run.browser || project.config.browser;
+    browser = await engines[run.browser].launch({ headless: true }); run.browserVersion = browser.version();
+    signal?.throwIfAborted();
+    context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: 'en-US', timezoneId: 'UTC', serviceWorkers: 'block', storageState: authState(project) });
     await context.route('**/*', async route => {
       const url = route.request().url();
       try {
@@ -92,8 +99,10 @@ export async function executeRun(store: Store, project: Project, run: Run) {
       } catch (error) { event('request', 'Blocked or failed request', { url, error: String(error) }); await route.abort().catch(() => {}); }
     });
     await context.routeWebSocket('**/*', ws => ws.close());
-    await context.tracing.start({ screenshots: false, snapshots: false, sources: false });
     const page = await context.newPage(); page.setDefaultTimeout(7000); page.setDefaultNavigationTimeout(15000);
+    await captureInteractions(page, project, data => event('action', 'Instrumented interaction', data));
+    await login(page, project); signal?.throwIfAborted();
+    await context.tracing.start({ screenshots: false, snapshots: false, sources: false });
     page.on('console', msg => { if (['error', 'warning'].includes(msg.type())) event('console', msg.text(), { level: msg.type() }); });
     page.on('pageerror', error => { pageErrors.push(error.message); event('error', error.message); });
     page.on('framenavigated', frame => { if (frame === page.mainFrame()) event('navigation', 'Page navigation', { url: frame.url() }); });
@@ -116,14 +125,12 @@ export async function executeRun(store: Store, project: Project, run: Run) {
     });
     const orderId = await preparePayment(context, project, run, event);
     for (const [index, step] of run.flow.steps.entries()) {
+      signal?.throwIfAborted();
       activeStep = `${index + 1}. ${step.action}${'name' in step ? ` · ${step.name}` : 'text' in step ? ` · ${step.text}` : ''}`;
       event('action', activeStep, { step: index + 1, action: step.action });
-      if (step.action === 'goto') await page.goto(assertTarget(orderId ? step.url.replaceAll('{orderId}', orderId) : step.url, run.baseUrl, project.config).href, { waitUntil: 'domcontentloaded' });
-      if (step.action === 'click') await page.getByRole(step.role, { name: step.name, exact: true }).click();
-      if (step.action === 'fill') { const value = step.env ? process.env[step.env] : step.value; if (value === undefined) throw new Error(`Missing environment reference: ${step.env}`); await page.getByLabel(step.label, { exact: true }).fill(value); }
-      if (step.action === 'back') await page.goBack({ waitUntil: 'domcontentloaded' });
-      if (step.action === 'reload') await page.reload({ waitUntil: 'domcontentloaded' });
-      if (step.action === 'assertText') { await page.getByText(step.text, { exact: true }).waitFor({ state: 'visible' }); event('assertion', `Visible: ${step.text}`, { expected: step.text, observed: 'visible', passed: true }); }
+      await performStep(page, step, project, run.baseUrl, orderId);
+      if (step.action === 'goto' && run.scenario.kind === 'payment' && run.scenario.paymentCase === 'refresh-before-confirmation') { await page.reload({ waitUntil: 'domcontentloaded' }); event('action', 'Refresh before confirmation'); }
+      if (step.action === 'assertText') event('assertion', `Visible: ${step.text}`, { expected: step.text, observed: 'visible', passed: true });
     }
     if (run.scenario.kind === 'capture') {
       if (!capturedFixture) { let timer: ReturnType<typeof setTimeout>; try { await Promise.race([captureReady, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('The flow did not request the selected API fixture URL')), 7000); })]); } finally { clearTimeout(timer!); } }
@@ -148,7 +155,7 @@ export async function executeRun(store: Store, project: Project, run: Run) {
       if (run.result) run.result = { ...run.result, passed: false, observed: { ...(run.result.observed as Record<string, unknown>), pageErrors } };
       throw new Error('Checkout raised an uncaught browser error');
     }
-    run.status = 'passed';
+    signal?.throwIfAborted(); run.status = 'passed';
   } catch (error) {
     fail(error);
   } finally {
@@ -166,6 +173,7 @@ export async function executeRun(store: Store, project: Project, run: Run) {
     }
     await Promise.allSettled([...pending]);
     await browser?.close().catch(() => {}); rmSync(temp, { recursive: true, force: true });
+    signal?.removeEventListener('abort', abort);
     if (run.status === 'passed' && ['api', 'payment'].includes(run.scenario.kind || '') && pageErrors.length) {
       if (run.result) run.result = { ...run.result, passed: false, observed: { ...(run.result.observed as Record<string, unknown>), pageErrors } };
       fail(new Error('Scenario raised an uncaught browser error'));

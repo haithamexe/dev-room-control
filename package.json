@@ -1,6 +1,6 @@
 {
   "name": "developer-control-room",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -26,7 +26,10 @@
     "typecheck": "tsc --noEmit",
     "test:phase34": "tsx scripts/verify-phase34.ts",
     "test:editor": "tsx scripts/verify-editor.ts",
-    "package:editor": "tsx scripts/package-editor.ts"
+    "package:editor": "tsx scripts/package-editor.ts",
+    "package:windows": "npm run build && npm run package:bridge && tsx scripts/package-windows.ts",
+    "test:release": "tsx scripts/verify-local-release.ts",
+    "package:bridge": "tsx scripts/package-bridge.ts"
   },
   "dependencies": {
     "fflate": "0.8.3",
@@ -43,6 +46,8 @@
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.1",
     "electron": "44.4.5",
+    "electron-builder": "26.15.3",
+    "esbuild": "0.28.2",
     "tsx": "4.23.15",
     "typescript": "7.0.2",
     "vite": "8.3.0"

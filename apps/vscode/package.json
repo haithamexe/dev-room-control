@@ -1,12 +1,44 @@
 {
-  "name": "developer-control-room-editor", "displayName": "Developer Control Room", "description": "Open saved investigation sources and copy local AI context.", "version": "0.1.0", "publisher": "local-control-room", "private": true,
-  "engines": { "vscode": "^1.95.0" }, "main": "./extension.cjs", "categories": ["Other"],
+  "name": "developer-control-room-editor",
+  "displayName": "Developer Control Room",
+  "description": "Open saved investigation sources and copy local AI context.",
+  "version": "0.2.0",
+  "publisher": "local-control-room",
+  "private": true,
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "main": "./extension.cjs",
+  "categories": [
+    "Other"
+  ],
   "contributes": {
     "commands": [
-      { "command": "dcr.openEvidenceSource", "title": "Control Room: Open Evidence Source" },
-      { "command": "dcr.copyContext", "title": "Control Room: Copy Context for AI" },
-      { "command": "dcr.openDashboard", "title": "Control Room: Open Dashboard" }
+      {
+        "command": "dcr.openEvidenceSource",
+        "title": "Control Room: Open Evidence Source"
+      },
+      {
+        "command": "dcr.copyContext",
+        "title": "Control Room: Copy Context for AI"
+      },
+      {
+        "command": "dcr.openDashboard",
+        "title": "Control Room: Open Dashboard"
+      }
     ],
-    "configuration": { "title": "Developer Control Room", "properties": { "developerControlRoom.port": { "type": "number", "default": 4310, "minimum": 1024, "maximum": 65535, "scope": "application", "description": "Port of the local Control Room service." } } }
+    "configuration": {
+      "title": "Developer Control Room",
+      "properties": {
+        "developerControlRoom.port": {
+          "type": "number",
+          "default": 4310,
+          "minimum": 1024,
+          "maximum": 65535,
+          "scope": "application",
+          "description": "Port of the local Control Room service."
+        }
+      }
+    }
   }
 }

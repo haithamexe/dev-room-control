@@ -204,3 +204,7 @@ Runs and matrices record their owning process. At startup and before project del
 Technical references: [Node SQLite](https://nodejs.org/api/sqlite.html), [Playwright tracing](https://playwright.dev/docs/api/class-tracing), [local trace viewer](https://playwright.dev/docs/trace-viewer).
 
 For the new modules, general AI handoff, exact commands, token rules, bridge setup and editor installation, see [Code, UI, and session workflows](docs/UNDERSTANDING.md).
+
+## Windows local release
+
+See [local installer and portable instructions](docs/LOCAL_RELEASE.md) and [advanced workflows](docs/ADVANCED.md). Build with `npm run package:windows`; verify the packaged runtime with `npm run test:release`. Microsoft Store submission remains deferred.
