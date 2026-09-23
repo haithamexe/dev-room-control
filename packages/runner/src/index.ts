@@ -5,20 +5,23 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store, id, now } from '../../storage/src/index.ts';
 import type { Flow, Run, Project, RunEvent } from '../../core/src/index.ts';
-import { redact, redactText, assertTarget } from '../../core/src/redact.ts';
+import { redact, redactText, assertTarget, scrubInputs } from '../../core/src/redact.ts';
 import { snapshot } from '../../repo-analysis/src/index.ts';
 
 // Raw Playwright network resources can contain credentials. Keep action records only.
-export function sanitizeTrace(bytes: Uint8Array, fields: string[]) {
+export function sanitizeTrace(bytes: Uint8Array, fields: string[], inputs: string[] = []) {
   const output: Record<string, Uint8Array> = {};
   for (const [name, data] of Object.entries(unzipSync(bytes))) {
     if (!name.endsWith('.trace') && !name.endsWith('.stacks')) continue;
     const lines = strFromU8(data).split('\n').filter(Boolean).map(line => {
       const entry = JSON.parse(line);
-      if (entry.type === 'frame-snapshot' || entry.type === 'screencast-frame') return '';
+      if (['frame-snapshot', 'screencast-frame', 'log', 'console', 'event'].includes(entry.type)) return '';
       if (entry.params?.value) entry.params.value = '[REDACTED]';
       if (entry.params?.text) entry.params.text = '[REDACTED]';
-      return JSON.stringify(redact(entry, fields));
+      // Preserve only trace protocol metadata at the record boundary. Nested
+      // request/response data must never inherit those exemptions.
+      const clean = Object.fromEntries(Object.entries(entry).map(([key, value]) => [key, /^(type|method|apiName|class|callId|pageId|contextId|browserName|version|id|guid|sdkLanguage|origin|platform)$/.test(key) ? value : scrubInputs(value, inputs)]));
+      return JSON.stringify(redact(clean, fields));
     }).filter(Boolean);
     output[name] = strToU8(lines.join('\n') + '\n');
   }
@@ -31,7 +34,8 @@ export function createRun(store: Store, project: Project, flow: Flow, replay?: R
 export async function executeRun(store: Store, project: Project, run: Run) {
   let browser: Browser | undefined, context: BrowserContext | undefined;
   const temp = mkdtempSync(join(tmpdir(), 'dcr-trace-'));
-  const event = (kind: RunEvent['kind'], title: string, data: Record<string, unknown> = {}) => store.put('events', { id: id(), runId: run.id, projectId: project.id, at: now(), kind, title: redactText(title), data: redact(data, project.config.redactFields) });
+  const inputs = run.flow.steps.flatMap(step => step.action === 'fill' ? [step.env ? process.env[step.env] || '' : step.value || ''] : []).filter(Boolean);
+  const event = (kind: RunEvent['kind'], title: string, data: Record<string, unknown> = {}) => store.put('events', { id: id(), runId: run.id, projectId: project.id, at: now(), kind, title: redactText(scrubInputs(title, inputs)), data: redact(scrubInputs(data, inputs), project.config.redactFields) });
   const pending = new Set<Promise<void>>();
   let activeStep = 'Launch browser';
   try {
@@ -42,8 +46,15 @@ export async function executeRun(store: Store, project: Project, run: Run) {
       try {
         assertTarget(url, run.baseUrl, project.config);
         if (project.config.ignoreUrls.some(pattern => url.includes(pattern))) return route.abort();
-        await route.continue();
-      } catch { event('request', 'Blocked non-allowlisted request', { url }); await route.abort(); }
+        // Browser routing is not called again for redirect-chain requests. Fetch one
+        // hop only and reject redirects before any destination can be contacted.
+        const response = await route.fetch({ maxRedirects: 0, timeout: 15000 });
+        if (response.status() >= 300 && response.status() < 400 && response.headers().location) {
+          event('request', 'HTTP redirect blocked by target policy', { url, status: response.status(), location: response.headers().location });
+          await route.abort(); return;
+        }
+        await route.fulfill({ response });
+      } catch (error) { event('request', 'Blocked or failed request', { url, error: String(error) }); await route.abort().catch(() => {}); }
     });
     await context.routeWebSocket('**/*', ws => ws.close());
     await context.tracing.start({ screenshots: false, snapshots: false, sources: false });
@@ -77,7 +88,7 @@ export async function executeRun(store: Store, project: Project, run: Run) {
     }
     run.status = 'passed';
   } catch (error) {
-    run.status = 'failed'; run.error = redactText(error instanceof Error ? error.message : String(error));
+    run.status = 'failed'; run.error = redactText(scrubInputs(error instanceof Error ? error.message : String(error), inputs));
     event('error', `Failed at ${activeStep}`, { error: run.error });
     const finding = store.put('findings', { id: id(), projectId: project.id, runId: run.id, title: `${run.name} did not complete`, expected: activeStep, observed: run.error, status: 'open', createdAt: now() });
     event('assertion', 'Flow failed', { findingId: finding.id, expected: activeStep, observed: run.error, passed: false });
@@ -87,11 +98,11 @@ export async function executeRun(store: Store, project: Project, run: Run) {
         const page = context.pages()[0];
         if (page && !page.isClosed()) {
           // Mask form fields, explicit private regions, and common personal-data text.
-          const masks = [page.locator('input, textarea, [data-private], [autocomplete]'), page.getByText(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|\b(?:\d[ -]*?){13,19}\b/), ...project.config.maskSelectors.map(s => page.locator(s))];
+          const masks = [page.locator('input, textarea, [data-private], [autocomplete]'), page.getByText(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|\b(?:\d[ -]*?){13,19}\b/), ...inputs.map(value => page.getByText(value)), ...project.config.maskSelectors.map(s => page.locator(s))];
           store.artifact(project.id, run.id, 'screenshot.png', 'image/png', await page.screenshot({ fullPage: false, mask: masks, animations: 'disabled', timeout: 5000 }));
         }
       } catch (e) { event('error', 'Screenshot unavailable', { error: String(e) }); }
-      try { const path = join(temp, 'trace.zip'); await context.tracing.stop({ path }); store.artifact(project.id, run.id, 'trace.zip', 'application/zip', sanitizeTrace(readFileSync(path), project.config.redactFields)); } catch (e) { event('error', 'Trace unavailable', { error: String(e) }); }
+      try { const path = join(temp, 'trace.zip'); await context.tracing.stop({ path }); store.artifact(project.id, run.id, 'trace.zip', 'application/zip', sanitizeTrace(readFileSync(path), project.config.redactFields, inputs)); } catch (e) { event('error', 'Trace unavailable', { error: String(e) }); }
       await context.close().catch(() => {});
     }
     await Promise.allSettled([...pending]);

@@ -50,7 +50,11 @@ export class ControlRoom extends EventEmitter {
     const promise = executeRun(this.store, project, run).then(result => { this.emit('run.completed', result); return result; }).finally(() => this.active.delete(run.id));
     this.active.set(run.id, promise); void promise.catch(() => {}); return run;
   }
-  saveTask(projectId: string, input: unknown) { this.store.get('projects', projectId); return this.store.put('task_presets', { ...taskSchema.parse(input), id: id(), projectId }); }
+  saveTask(projectId: string, input: unknown) {
+    this.store.get('projects', projectId); const task = taskSchema.parse(input);
+    if (task.flowId && this.store.get<Flow>('flows', task.flowId).projectId !== projectId) throw new Error('Task flow must belong to this project');
+    return this.store.put('task_presets', { ...task, id: id(), projectId });
+  }
   previewTask(taskId: string) {
     const task = this.store.get<Task>('task_presets', taskId), project = this.store.get<Project>('projects', task.projectId);
     if (!project.config.modules.includes('tasks')) throw new Error('Enable Workspace Launcher in settings');
@@ -59,7 +63,9 @@ export class ControlRoom extends EventEmitter {
     const command = task.command ? project.config.commands[task.command] : undefined;
     if (task.command && !command) throw new Error('This command is no longer configured');
     const git = snapshot(project.path);
-    return { task, files, urls, command, git, branchMessage: task.branch && task.branch !== git.branch ? (git.dirty ? 'Uncommitted changes: branch switching is paused. Commit or stash your work, then switch manually.' : `Suggested branch: ${task.branch}. Switch manually when ready.`) : '' };
+    const flow = task.flowId ? this.store.get<Flow>('flows', task.flowId) : undefined;
+    const lastRun = task.flowId ? this.store.list<Run>('runs', project.id).find(run => run.flowId === task.flowId) : undefined;
+    return { task, files, urls, command, git, flow, lastRun, branchMessage: task.branch && task.branch !== git.branch ? (git.dirty ? 'Uncommitted changes: branch switching is paused. Commit or stash your work, then switch manually.' : `Suggested branch: ${task.branch}. Switch manually when ready.`) : '' };
   }
   launchTask(taskId: string, approveCommand: boolean) {
     const preview = this.previewTask(taskId), project = this.store.get<Project>('projects', preview.task.projectId);
@@ -68,7 +74,12 @@ export class ControlRoom extends EventEmitter {
       const child = spawn(preview.command, { cwd: project.path, shell: true, windowsHide: true, stdio: 'ignore' });
       this.processes.add(child); child.on('close', () => this.processes.delete(child)); child.on('error', () => this.processes.delete(child));
     }
-    return { ...preview, editorUrls: preview.files.map(file => `vscode://file/${file.replaceAll('\\', '/')}`), launched: true };
+    const editorUrls = preview.files.map(file => `vscode://file/${file.replaceAll('\\', '/')}`);
+    for (const url of [...preview.urls, ...editorUrls]) {
+      const child = process.platform === 'win32' ? spawn('rundll32.exe', ['url.dll,FileProtocolHandler', url], { windowsHide: true, stdio: 'ignore' }) : spawn(process.platform === 'darwin' ? 'open' : 'xdg-open', [url], { stdio: 'ignore' });
+      child.on('error', () => {});
+    }
+    return { ...preview, editorUrls, launched: true };
   }
   deleteProject(projectId: string, confirmation: string) {
     const project = this.store.get<Project>('projects', projectId);

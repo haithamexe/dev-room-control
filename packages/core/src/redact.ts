@@ -11,9 +11,16 @@ export function redact(value: unknown, extra: string[] = []): any {
   if (Array.isArray(value)) return value.map(v => redact(v, extra));
   if (value && typeof value === 'object') {
     const obj = value as Record<string, unknown>;
-    if (typeof obj.name === 'string' && sensitive.test(obj.name) && 'value' in obj) return { ...obj, value: '[REDACTED]' };
-    return Object.fromEntries(Object.entries(obj).map(([key, v]) => [key, sensitive.test(key) || extra.includes(key) ? '[REDACTED]' : redact(v, extra)]));
+    const secretHeader = typeof obj.name === 'string' && sensitive.test(obj.name) && 'value' in obj;
+    return Object.fromEntries(Object.entries(obj).map(([key, v]) => [key, sensitive.test(key) || extra.includes(key) || secretHeader && key === 'value' ? '[REDACTED]' : redact(v, extra)]));
   }
+  return value;
+}
+// Resolved environment inputs are known secrets even if they have no recognizable pattern.
+export function scrubInputs(value: unknown, secrets: string[]): any {
+  if (typeof value === 'string') return secrets.filter(Boolean).sort((a, b) => b.length - a.length).reduce((text, secret) => text.split(secret).join('[INPUT]'), value);
+  if (Array.isArray(value)) return value.map(v => scrubInputs(v, secrets));
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, scrubInputs(v, secrets)]));
   return value;
 }
 export function assertTarget(raw: string, base: string, config: { environment: string; allowedOrigins: string[] }): URL {

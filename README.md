@@ -30,7 +30,9 @@ npm run dev        # Node service :4310 + Vite :5173
 npm run desktop    # builds, then opens the Electron dashboard
 ```
 
-The desktop shell and browser dashboard use the same local service. Electron has Node integration disabled, context isolation enabled, and a sandboxed renderer. Dependencies are pinned exactly in `package.json` and `package-lock.json`.
+The desktop shell and browser dashboard use the same local service. Electron has Node integration disabled, context isolation enabled, and a sandboxed renderer. Its first launch may download the native runtime; `npx install-electron --no` installs it ahead of time. Dependencies are pinned exactly in `package.json` and `package-lock.json`.
+
+The native smoke check is `npm run test:desktop` (two cold starts on ports 4320/4321). Run native Electron from a normal user terminal. Launching it inside the agent's restricted Windows tool environment reproduced an `0xC0000005` access violation; the same application runs outside that restriction with its own renderer sandbox still enabled.
 
 ## Use your own repository
 
@@ -91,10 +93,10 @@ Project Settings accepts validated JSON:
 }
 ```
 
-- Local mode allows the chosen loopback origin. Additional loopback origins require explicit allowlisting. Remote targets require `test` or `staging` designation and exact `allowedOrigins`. Playwright blocks unmatched requests, service workers, and WebSockets. There is no cloud or AI integration.
+- Local mode allows the chosen loopback origin. Additional loopback origins require explicit allowlisting. Remote targets require `test` or `staging` designation and exact `allowedOrigins`. Playwright blocks unmatched requests, service workers, and WebSockets. **HTTP redirects are rejected in Phase 1**, including redirects to otherwise allowed targets: Playwright does not re-run routing checks for redirect-chain requests. Use the final destination URL. Requests are fetched one hop and buffered before fulfillment, so streaming timing is not faithfully reproduced. There is no cloud or AI integration.
 - The local HTTP service binds only to `127.0.0.1`, validates Host/Origin, rejects cross-site fetches, and requires a session token on every mutation. It is a personal local service, not a multi-user security boundary against other programs running as your OS user.
 - Network evidence retains URL **without query/fragment**, method, status and duration. JSON response bodies are captured only with `captureBodies: true` and under 64 KB. Auth/cookie headers, token/password/card fields, email patterns, and custom `redactFields` are scrubbed.
-- Playwright traces contain **sanitized action records only**. Network payloads, DOM snapshots, source files, and trace filmstrips are excluded. Raw traces exist briefly in an OS temporary directory during sanitization and are removed in the runner's cleanup. A forced OS/process termination can interrupt that cleanup.
+- Playwright traces contain **sanitized action records only**. Network payloads, DOM snapshots, source files, trace filmstrips, and raw action logs are excluded. Resolved fill inputs are scrubbed from event/error text and trace data and masked when rendered as page text. Raw traces exist briefly in an OS temporary directory during sanitization and are removed in the runner's cleanup. A forced OS/process termination can interrupt that cleanup.
 - Screenshots mask inputs, textareas, `[data-private]`, common email/card text, and `maskSelectors`. Automatic redaction is not a universal PII detector: mark private regions and add selectors before running against sensitive fixture data. Do not put credentials into commands, notes, URLs, or flow definitions; use environment references.
 - Artifacts are stored under `.dcr/<project-id>/<run-id>/` with SHA-256 hashes and relative paths in SQLite. Saving settings prunes completed runs older than `retentionDays`. Removing a project requires its exact name and is blocked while its runs are active.
 - **Export config** writes `.devcontrolroom.json` to the repository only on request and refuses to overwrite an existing file. No secrets store is needed in Phase 1 because the app only reads environment references.
@@ -103,7 +105,7 @@ Project Settings accepts validated JSON:
 
 Save a preset with repository-relative files, browser URLs, an optional configured command, a relevant flow, branch suggestion, and notes. **Preview launch** shows each action and the full command. A visible checkbox is required before a command runs. Source files are confined to the real repository path, including symlink resolution. Branches are **never switched automatically**; a dirty worktree displays an explicit pause message.
 
-Task previews include source inspection and direct VS Code/file-URL links. Your OS must have the VS Code URL handler installed for editor links. Browser popup/handler permissions can affect opening links. Launching the command does not establish that the dev server is ready; inspect the app URL before running a flow.
+Launching opens saved URLs in the default browser and files through the VS Code URL handler. Task previews include source inspection, retry links, and the associated flow's latest run (or its saved definition when no run exists). Your OS must have the VS Code URL handler installed for editor opening. OS handler permissions can affect opening links. Launching the command does not establish that the dev server is ready; inspect the app URL before running a flow.
 
 Project session notes and exact next-step text persist across restarts. Full Context Resurrection (recent-commit UI and resume integration) remains Phase 4.
 
@@ -115,7 +117,7 @@ npm test
 npm run test:gate
 ```
 
-The five focused tests cover migration idempotency, persistence/deletion, nested redaction, trace sanitization, target restrictions, and dirty-worktree/path handling. The Phase 1 gate starts a fixture server on **4411** and dashboard on **4311**, then checks:
+The seven focused tests cover migration idempotency, persistence/deletion, nested redaction, trace sanitization, target restrictions, dirty-worktree/path handling, real-browser typed-secret leakage, and redirect containment. The Phase 1 gate starts a fixture server on **4411** and dashboard on **4311**, then checks:
 
 1. A real failure has its preceding action, HTTP 500, console error, screenshot, trace and timeline.
 2. Replay reproduces the failure even after changing the current flow definition.

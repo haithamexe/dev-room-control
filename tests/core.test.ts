@@ -4,11 +4,14 @@ import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { createServer } from 'node:http';
+import { once } from 'node:events';
 import { zipSync, unzipSync, strFromU8, strToU8 } from 'fflate';
 import { redact, assertTarget } from '../packages/core/src/redact.ts';
 import { Store } from '../packages/storage/src/index.ts';
 import { sanitizeTrace } from '../packages/runner/src/index.ts';
 import { ControlRoom } from '../packages/modules/src/service.ts';
+import type { Artifact } from '../packages/core/src/index.ts';
 
 test('redaction covers nested secrets, headers, URLs and personal data', () => {
   const result = JSON.stringify(redact({ token: 'seeded-secret', data: { email: 'alice@example.com', cardNumber: '4242424242424242' }, headers: [{ name: 'Authorization', value: 'Bearer abc' }], message: 'password=hunter2 Bearer abcd https://localhost/api?token=leak', extra: 'sensitive-custom' }, ['extra']));
@@ -47,4 +50,37 @@ test('task preview pauses branch changes in a dirty repository and confines sour
     assert.throws(() => service.saveFlow(p.id, { name: 'Unsafe', steps: [{ action: 'fill', label: 'Password', value: 'dont-store' }] }));
     assert.throws(() => service.deleteProject(p.id, 'wrong name')); store.close();
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('real browser input never survives in action traces or console events', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dcr-input-test-')), store = new Store(root), service = new ControlRoom(store);
+  const secret = 'unlabelled-seeded-credential-3f9a'; process.env.DCR_REGRESSION_INPUT = secret;
+  const server = createServer((req, res) => {
+    if (req.url === '/echo') { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ id: secret, nested: { type: secret } })); return; }
+    res.setHeader('Content-Type', 'text/html'); res.end('<label>Password<input type="password" aria-label="Password" oninput="console.error(\'typed: \' + this.value); fetch(\'/echo\').then(() => document.querySelector(\'p\').textContent = \'Ready\')"></label><p>Waiting</p>');
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  try {
+    const p = service.addProject({ name: 'Input test', path: root, baseUrl: `http://127.0.0.1:${(server.address() as any).port}`, config: { captureBodies: true } });
+    const flow = service.saveFlow(p.id, { name: 'Fill safely', steps: [{ action: 'goto', url: '/' }, { action: 'fill', label: 'Password', env: 'DCR_REGRESSION_INPUT' }, { action: 'assertText', text: 'Ready' }] });
+    const run = service.run(flow.id); assert.equal((await service.active.get(run.id))!.status, 'passed');
+    assert.ok(!JSON.stringify(store.list('events')).includes(secret));
+    assert.ok(store.list<any>('events').some(e => e.data.body?.id === '[INPUT]' && e.data.body?.nested?.type === '[INPUT]'));
+    const trace = store.list<Artifact>('artifacts').find(a => a.name === 'trace.zip')!;
+    const clean = Object.values(unzipSync(store.readArtifact(trace))).map(bytes => strFromU8(bytes)).join('\n');
+    assert.ok(!clean.includes(secret)); assert.ok(clean.includes('fill'));
+  } finally { delete process.env.DCR_REGRESSION_INPUT; await new Promise<void>(resolve => server.close(() => resolve())); store.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test('HTTP redirects never contact an origin outside the configured target', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dcr-redirect-test-')), store = new Store(root), service = new ControlRoom(store);
+  let destinationHits = 0;
+  const destination = createServer((req, res) => { destinationHits++; res.end('unauthorized destination'); }); destination.listen(0, '127.0.0.1'); await once(destination, 'listening');
+  const server = createServer((req, res) => { res.writeHead(302, { Location: `http://127.0.0.1:${(destination.address() as any).port}/private` }); res.end(); }); server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  try {
+    const p = service.addProject({ name: 'Redirect test', path: root, baseUrl: `http://127.0.0.1:${(server.address() as any).port}` });
+    const flow = service.saveFlow(p.id, { name: 'Redirect boundary', steps: [{ action: 'goto', url: '/' }] });
+    const run = service.run(flow.id); assert.equal((await service.active.get(run.id))!.status, 'failed');
+    assert.equal(destinationHits, 0); assert.ok(store.list<any>('events').some(e => e.title === 'HTTP redirect blocked by target policy'));
+  } finally { await Promise.all([new Promise<void>(resolve => server.close(() => resolve())), new Promise<void>(resolve => destination.close(() => resolve()))]); store.close(); rmSync(root, { recursive: true, force: true }); }
 });
