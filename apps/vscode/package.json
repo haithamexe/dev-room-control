@@ -2,8 +2,8 @@
   "name": "developer-control-room-editor",
   "displayName": "Developer Control Room",
   "description": "Open saved investigation sources and copy local AI context.",
-  "version": "0.2.0",
-  "publisher": "local-control-room",
+  "version": "0.3.0",
+  "publisher": "haithamexe",
   "private": true,
   "engines": {
     "vscode": "^1.95.0"
@@ -40,5 +40,17 @@
         }
       }
     }
+  },
+  "author": {
+    "name": "Haitham Jalal",
+    "url": "https://github.com/haithamexe"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/haithamexe/dev-room-control.git"
+  },
+  "homepage": "https://github.com/haithamexe/dev-room-control#readme",
+  "bugs": {
+    "url": "https://github.com/haithamexe/dev-room-control/issues"
   }
 }

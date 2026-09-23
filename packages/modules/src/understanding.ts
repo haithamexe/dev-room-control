@@ -1,3 +1,4 @@
+import { inspectReact } from '../../runner/src/react-inspection.ts';
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
 import { Store, id, now } from '../../storage/src/index.ts';
@@ -68,13 +69,15 @@ export class UnderstandingCommands {
         const facts = await elementFacts(page, data.selector, project.config.understanding.bridgeEnabled, project.config.maskSelectors);
         if (facts.instrumentation?.state) { try { facts.instrumentation.state = JSON.stringify(redact(JSON.parse(facts.instrumentation.state), project.config.redactFields)); } catch { facts.instrumentation.state = redact(facts.instrumentation.state, project.config.redactFields); } }
         report.sources = bridgeSource(project, facts.metadata);
-        report.data = { ...facts, selector: data.selector, route: page.url(), provenance: 'observed', sourceConfidence: report.sources.length ? 'Application-supplied instrumentation' : 'Unknown: no verified source mapping', instrumentation: facts.instrumentation, limitations: ['DOM styles and attributes are observed facts.', 'State and handler labels are application-supplied metadata, not inspected React internals.', 'No API causality is inferred from temporal proximity.'] };
+        const react = await inspectReact(page, data.selector, project);
+        report.data = { ...facts, react, selector: data.selector, route: page.url(), provenance: 'observed', sourceConfidence: report.sources.length ? 'Application-supplied instrumentation' : 'Unknown: no verified source mapping', instrumentation: facts.instrumentation, limitations: ['DOM styles and attributes are observed facts.', 'Application labels and best-effort React runtime observations are reported separately.', 'No API causality is inferred from temporal proximity.'] };
         await page.locator(data.selector).first().evaluate(el => { (el as HTMLElement).style.outline = '3px solid #15b88a'; });
         if (data.interact) {
           capturing = true; await page.locator(data.selector).first().click();
           let timer: ReturnType<typeof setTimeout> | undefined;
           await Promise.race([observed, new Promise<void>(resolve => { timer = setTimeout(resolve, 5000); })]); if (timer) clearTimeout(timer);
           report.data.interactions = interactions;
+          report.data.reactAfter = await inspectReact(page, data.selector, project).catch(() => ({ status: 'unavailable', note: 'Element changed after the interaction' }));
           report.data.limitations.push(interactions.length ? 'Only requests explicitly routed through traceInteraction scope.request are associated. State comes from the application-provided getter.' : 'No completed instrumented interaction arrived within five seconds. Handler/state/request ownership remains unknown.');
         }
         delete report.data.metadata;

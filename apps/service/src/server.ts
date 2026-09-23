@@ -1,3 +1,5 @@
+import { cleanupScheduled } from '../../../packages/modules/src/retention.ts';
+import { importPlaywright } from '../../../packages/modules/src/flow-import.ts';
 import { FlowRecorder } from '../../../packages/modules/src/recorder.ts';
 import { createServer, type IncomingMessage } from 'node:http';
 import { randomBytes } from 'node:crypto';
@@ -33,13 +35,16 @@ export function startServer(port = Number(process.env.DCR_PORT || 4310), store =
         if (!existsSync(file)) return send({ error: 'Run npm run build first, or open the development UI on port 5173.' }, 404);
         res.writeHead(200, { 'Content-Type': ({ '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml' } as Record<string, string>)[extname(file)] || 'application/octet-stream', 'Content-Security-Policy': "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'", 'X-Content-Type-Options': 'nosniff' }); return res.end(readFileSync(file));
       }
+      if (shuttingDown && !['GET', 'HEAD'].includes(method || '')) return send({ error: 'Control Room is shutting down' }, 503);
       if (method === 'GET' && parts[1] === 'session') return send({ token, launchId: process.env.DCR_LAUNCH_ID });
       if (!['GET', 'HEAD'].includes(method || '') && req.headers['x-dcr-token'] !== token) return send({ error: 'Reload the dashboard to renew your local session' }, 403);
       if (method === 'GET' && parts[1] === 'overview') {
-        return send({ projects: store.list<Project>('projects').map(p => ({ ...p, config: configSchema.parse(p.config), git: snapshot(p.path) })), runs: store.list<Run>('runs'), findings: store.list('findings'), flows: store.list('flows'), tasks: store.list('task_presets'), notes: store.list('notes'), fixtures: store.list('api_fixtures'), scenarios: store.list('scenarios'), matrices: store.list('matrices'), reports: store.list('reports'), sessions: store.list('repo_snapshots'), modules });
+        return send({ projects: store.list<Project>('projects').map(p => ({ ...p, config: configSchema.parse(p.config), git: snapshot(p.path) })), runs: store.list<Run>('runs'), findings: store.list('findings'), flows: store.list('flows'), tasks: store.list('task_presets'), notes: store.list('notes'), fixtures: store.list('api_fixtures'), scenarios: store.list('scenarios'), matrices: store.list('matrices'), reports: store.list('reports'), sessions: store.list('repo_snapshots'), commandRuns: store.list<any>('environments').filter(row => row.kind === 'command'), cleanup: store.list<any>('environments').filter(row => row.kind === 'cleanup'), modules });
       }
+      if (method === 'POST' && parts[1] === 'recordings' && parts[3] === 'navigate') return send(await recorder.navigate(parts[2], await body(req)));
       if (method === 'POST' && parts[1] === 'recordings' && parts[3] === 'stop') return send(await recorder.stop(parts[2]));
-      if (method === 'GET' && parts[1] === 'recordings') return send([...recorder.sessions.values()].map(session => ({ id: session.id, projectId: session.projectId, stopped: session.stopped })));
+      if (method === 'GET' && parts[1] === 'recordings') return send([...recorder.sessions.values()].map(session => ({ id: session.id, projectId: session.projectId, stopped: session.stopped, tabs: [...session.tabs.keys()] })));
+      if (method === 'POST' && parts[1] === 'commands' && parts[3] === 'stop') return send(await service.commands.stop(parts[2]));
       if (method === 'POST' && parts[1] === 'handoff') return send(handoff(store, await body(req)));
       if (method === 'GET' && parts[1] === 'reports' && parts[2]) return send(store.get('reports', parts[2]));
       if (method === 'POST' && parts[1] === 'demo') return send(await service.seedDemo());
@@ -64,6 +69,8 @@ export function startServer(port = Number(process.env.DCR_PORT || 4310), store =
         if (method === 'PUT' && parts[3] === 'notes') { const data = await body(req); return send(store.put('notes', { id: projectId, projectId, text: redactText(String(data.text || '').slice(0, 10000)), nextStep: redactText(String(data.nextStep || '').slice(0, 1000)) })); }
         if (method === 'GET' && parts[3] === 'source') return send(sourceText(service.understanding.project(projectId), url.searchParams.get('path') || ''));
       }
+      if (method === 'POST' && parts[1] === 'flows' && parts[2] === 'import') return send(importPlaywright(String((await body(req)).source || '')));
+      if (method === 'PUT' && parts[1] === 'flows' && parts[2]) { const flow = store.get<import('../../../packages/core/src/index.ts').Flow>('flows', parts[2]); return send(service.saveFlow(flow.projectId, await body(req), flow.id)); }
       if (method === 'POST' && parts[1] === 'flows' && parts[3] === 'run') return send(service.run(parts[2]), 202);
       if (parts[1] === 'fixtures' && parts[2] && method === 'PUT') { const fixture = store.get<ApiFixture>('api_fixtures', parts[2]); return send(service.reliability.saveFixture(fixture.projectId, await body(req), fixture.id)); }
       if (parts[1] === 'scenarios' && parts[2]) {
@@ -102,6 +109,25 @@ export function startServer(port = Number(process.env.DCR_PORT || 4310), store =
       send({ error: 'Not found' }, 404);
     } catch (error) { send({ error: redactText(error instanceof Error ? error.message : String(error)) }, 400); }
   });
+  const cleanupTimer = setInterval(() => cleanupScheduled(store), 60 * 60 * 1000); cleanupTimer.unref();
+  let shuttingDown = false;
+  const shutdown = async (message: unknown) => {
+    if ((message as any)?.type !== 'dcr-shutdown' || shuttingDown) return; shuttingDown = true;
+    clearInterval(cleanupTimer);
+    for (const id of service.reliability.activeMatrices.keys()) service.reliability.cancel(id);
+    for (const id of service.active.keys()) service.workers.cancel(id);
+    await Promise.allSettled([service.commands.close(), ...[...recorder.sessions.keys()].map(id => recorder.stop(id))]);
+    await Promise.allSettled([...service.reliability.activeMatrices.values(), ...service.active.values()]);
+    server.close(() => { void (async () => {
+      // A recorder launch that was already in flight may finish during shutdown.
+      await Promise.allSettled([service.commands.close(), ...[...recorder.sessions.keys()].map(id => recorder.stop(id))]);
+      process.exit(0);
+    })(); });
+  };
+  if (process.send) process.on('message', shutdown);
+  server.once('close', () => { process.off('message', shutdown); });
+  server.once('close', () => { clearInterval(cleanupTimer); void service.commands.close(); });
+  cleanupScheduled(store);
   server.listen(port, '127.0.0.1', () => console.log(`Developer Control Room: http://127.0.0.1:${port}`));
   return { server, service, store };
 }

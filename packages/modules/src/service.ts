@@ -1,3 +1,4 @@
+import { CommandProcesses } from './commands.ts';
 import { existsSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -16,22 +17,23 @@ import { RunWorkers } from './workers.ts';
 
 export class ControlRoom extends EventEmitter {
   active = new Map<string, Promise<Run>>();
-  processes = new Set<ReturnType<typeof spawn>>();
+  commands: CommandProcesses;
   reliability: ReliabilityCommands;
   understanding: UnderstandingCommands;
   workers: RunWorkers;
-  constructor(public store: Store) { super(); this.workers = new RunWorkers(store); this.reliability = new ReliabilityCommands(store, (flow, scenario, scenarioId) => this.startRun(flow, scenario, undefined, scenarioId), this.active, runId => this.workers.cancel(runId)); this.understanding = new UnderstandingCommands(store); this.recoverInterrupted(); }
+  constructor(public store: Store) { super(); this.commands = new CommandProcesses(store); this.workers = new RunWorkers(store); this.reliability = new ReliabilityCommands(store, (flow, scenario, scenarioId) => this.startRun(flow, scenario, undefined, scenarioId), this.active, runId => this.workers.cancel(runId)); this.understanding = new UnderstandingCommands(store); this.recoverInterrupted(); }
   addProject(input: unknown) {
     const data = z.object({ name: z.string().min(1).max(100), path: z.string().min(1), baseUrl: z.url(), config: configSchema.optional() }).parse(input);
     const path = realpathSync(data.path); if (!statSync(path).isDirectory()) throw new Error('Choose a repository directory');
     if (this.store.list<Project>('projects').some(p => p.path === path)) throw new Error('This repository is already added');
     const config = configSchema.parse(data.config ?? {}); const url = assertTarget(data.baseUrl, data.baseUrl, config);
     if (url.search || url.hash) throw new Error('Base URL must not contain query parameters or fragments');
-    const project = { id: id(), name: data.name, path, baseUrl: url.href.replace(/\/$/, ''), config, detection: detect(path), createdAt: now() };
+    const project = { id: id(), name: data.name, path, baseUrl: url.href.replace(/\/$/, ''), config, detection: { ...detect(path), ...config.detectionOverride }, createdAt: now() };
     this.store.put('projects', project); return project;
   }
   saveConfig(projectId: string, input: unknown) {
     const project = this.store.get<Project>('projects', projectId); project.config = configSchema.parse(input); assertTarget(project.baseUrl, project.baseUrl, project.config);
+    project.detection = { ...detect(project.path), ...project.config.detectionOverride };
     this.store.put('projects', project); this.store.prune(projectId, project.config.retentionDays); return project;
   }
   exportConfig(projectId: string) {
@@ -39,14 +41,16 @@ export class ControlRoom extends EventEmitter {
     if (existsSync(file)) throw new Error('Configuration already exists; move it before exporting a new copy');
     writeFileSync(file, JSON.stringify({ name: p.name, baseUrl: p.baseUrl, config: p.config }, null, 2), { flag: 'wx' }); return { path: file };
   }
-  saveFlow(projectId: string, input: unknown) {
+  saveFlow(projectId: string, input: unknown, flowId?: string) {
     this.store.get('projects', projectId);
     const definition = flowSchema.parse(input);
     for (const step of definition.steps) {
-      if (step.action === 'fill' && step.value !== undefined && (/password|card|secret|token|email/i.test(step.label) || redactText(step.value) !== step.value)) throw new Error('Use an env reference for sensitive input values');
-      if (step.action === 'goto') { const u = new URL(step.url, 'http://localhost'); if (u.search || u.hash || u.username || u.password) throw new Error('Flow URLs must not contain query data, fragments, or credentials'); }
+      if ((step.action === 'fill' || step.action === 'select') && step.value !== undefined && (/password|card|secret|token|email/i.test(step.label) || redactText(step.value) !== step.value)) throw new Error('Use an env reference for sensitive input values');
+      if (step.action === 'goto' || step.action === 'newTab') { const u = new URL(step.url, 'http://localhost'); if (u.search || u.hash || u.username || u.password) throw new Error('Flow URLs must not contain query data, fragments, or credentials'); }
     }
-    return this.store.put('flows', { ...definition, id: id(), projectId, createdAt: now() });
+    const previous = flowId ? this.store.get<Flow>('flows', flowId) : undefined;
+    if (previous && previous.projectId !== projectId) throw new Error('Flow project mismatch');
+    return this.store.put('flows', { ...definition, id: previous?.id || id(), projectId, createdAt: previous?.createdAt || now() });
   }
   run(flowId: string, replayId?: string) {
     const flow = this.store.get<Flow>('flows', flowId);
@@ -82,16 +86,13 @@ export class ControlRoom extends EventEmitter {
   launchTask(taskId: string, approveCommand: boolean) {
     const preview = this.previewTask(taskId), project = this.store.get<Project>('projects', preview.task.projectId);
     if (preview.command && !approveCommand) throw new Error('Review and approve the command before executing it');
-    if (preview.command) {
-      const child = spawn(preview.command, { cwd: project.path, shell: true, windowsHide: true, stdio: 'ignore' });
-      this.processes.add(child); child.on('close', () => this.processes.delete(child)); child.on('error', () => this.processes.delete(child));
-    }
+    const commandRun = preview.command ? this.commands.start(project, preview.task.id, preview.task.command || preview.task.name, preview.command) : undefined;
     const editorUrls = preview.files.map(file => `vscode://file/${file.replaceAll('\\', '/')}`);
     for (const url of [...preview.urls, ...editorUrls]) {
       const child = process.platform === 'win32' ? spawn('rundll32.exe', ['url.dll,FileProtocolHandler', url], { windowsHide: true, stdio: 'ignore' }) : spawn(process.platform === 'darwin' ? 'open' : 'xdg-open', [url], { stdio: 'ignore' });
       child.on('error', () => {});
     }
-    return { ...preview, editorUrls, launched: true };
+    return { ...preview, editorUrls, commandRun, launched: true };
   }
   recoverInterrupted(projectId?: string, confirmLegacyStopped = false) {
     let recovered = 0;
@@ -115,6 +116,7 @@ export class ControlRoom extends EventEmitter {
     if (this.store.list<{kind: string; status: string}>('environments', projectId).some(e => e.kind === 'inspection-lock' && e.status === 'running')) throw new Error('Wait for active inspections to finish before deleting');
     if (this.store.list<Run>('runs', projectId).some(r => r.status === 'running')) throw new Error('Wait for active runs to finish before deleting');
     if (this.store.list<{id: string; status: string}>('matrices', projectId).some(m => m.status === 'running')) throw new Error('Wait for active matrices to finish before deleting');
+    if (this.store.list<any>('environments', projectId).some(row => row.kind === 'command' && row.status === 'running')) throw new Error('Stop workspace commands before deleting this project');
     this.store.deleteProject(projectId); return { deleted: true };
   }
   async seedDemo() {

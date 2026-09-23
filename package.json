@@ -1,6 +1,6 @@
 {
   "name": "developer-control-room",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -51,5 +51,17 @@
     "tsx": "4.23.15",
     "typescript": "7.0.2",
     "vite": "8.3.0"
+  },
+  "author": {
+    "name": "Haitham Jalal",
+    "url": "https://github.com/haithamexe"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/haithamexe/dev-room-control.git"
+  },
+  "homepage": "https://github.com/haithamexe/dev-room-control#readme",
+  "bugs": {
+    "url": "https://github.com/haithamexe/dev-room-control/issues"
   }
 }

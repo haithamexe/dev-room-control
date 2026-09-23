@@ -42,12 +42,20 @@ export class Store {
     try { for (const table of tables) this.db.prepare(`DELETE FROM ${table} WHERE project_id=? OR (${table === 'projects' ? 'id' : 'project_id'}=?)`).run(projectId, projectId); this.db.exec('COMMIT'); } catch (e) { this.db.exec('ROLLBACK'); throw e; }
   }
   prune(projectId: string, days: number) {
+    if (!Number.isInteger(days) || days < 1) throw new Error('Invalid retention interval');
+    const retained = new Set<string>();
+    for (const matrix of this.list<any>('matrices', projectId)) for (const runId of matrix.runIds || []) retained.add(runId);
+    for (const session of this.list<any>('repo_snapshots', projectId)) { if (session.lastRunId) retained.add(session.lastRunId); if (session.lastFailedRunId) retained.add(session.lastFailedRunId); }
+    for (const fixture of this.list<any>('api_fixtures', projectId)) if (fixture.sourceRunId) retained.add(fixture.sourceRunId);
+    for (const run of this.list<any>('runs', projectId)) if (run.replayOf) retained.add(run.replayOf);
+    let removed = 0;
     for (const run of this.list<{id: string; status: string; startedAt: string}>('runs', projectId)) {
-      if (run.status === 'running' || Date.parse(run.startedAt) > Date.now() - days * 86400000) continue;
-      const target = within(this.root, `${projectId}/${run.id}`); if (existsSync(target)) rmSync(target, { recursive: true });
+      if (retained.has(run.id) || !Number.isFinite(Date.parse(run.startedAt)) || run.status === 'running' || Date.parse(run.startedAt) > Date.now() - days * 86400000) continue;
+      const target = within(within(this.root, projectId), run.id); if (target === this.root || target === within(this.root, projectId)) throw new Error('Invalid evidence directory'); if (existsSync(target)) rmSync(target, { recursive: true });
       for (const table of ['events', 'artifacts', 'findings'] as const) this.db.prepare(`DELETE FROM ${table} WHERE run_id=?`).run(run.id);
-      this.db.prepare('DELETE FROM runs WHERE id=?').run(run.id);
+      this.db.prepare('DELETE FROM runs WHERE id=?').run(run.id); removed++;
     }
+    return removed;
   }
   close() { this.db.close(); }
 }

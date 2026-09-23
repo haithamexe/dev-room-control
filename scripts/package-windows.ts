@@ -1,11 +1,12 @@
 import { build } from 'esbuild';
 import { build as packageApp, Platform, Arch } from 'electron-builder';
-import { cpSync, mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
+import { cpSync, mkdirSync, createReadStream, readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
+const metadata = JSON.parse(readFileSync('package.json', 'utf8'));
 // Keep local builds responsive; maximum LZMA compression is unnecessary here.
 process.env.ELECTRON_BUILDER_COMPRESSION_LEVEL ||= '1';
 const stage = resolve('build-artifacts/windows-app'), output = resolve('build-artifacts/release');
@@ -17,7 +18,7 @@ cpSync('build-artifacts/bridge', join(stage, 'bridge'), { recursive: true });
 cpSync('docs', join(stage, 'docs'), { recursive: true });
 cpSync('examples/demo-app', join(stage, 'examples/demo-app'), { recursive: true, filter: source => !source.includes('node_modules') && !source.includes('.devcontrolroom') });
 for (const name of ['playwright', 'playwright-core', 'typescript-parser']) cpSync(resolve('node_modules', name), join(stage, 'node_modules', name), { recursive: true });
-writeFileSync(join(stage, 'package.json'), JSON.stringify({ name: 'developer-control-room', productName: 'Developer Control Room', version: '0.2.0', description: 'Local developer testing and context workspace', author: 'Developer Control Room', main: 'main.cjs', type: 'module' }, null, 2));
+writeFileSync(join(stage, 'package.json'), JSON.stringify({ name: 'developer-control-room', productName: 'Developer Control Room', version: metadata.version, description: 'Local developer testing and context workspace', author: metadata.author, repository: metadata.repository, main: 'main.cjs', type: 'module' }, null, 2));
 const browserRoot = process.env.PLAYWRIGHT_BROWSERS_PATH || join(process.env.LOCALAPPDATA!, 'ms-playwright');
 const definitions = JSON.parse(readFileSync(join(require.resolve('playwright-core/package.json'), '..', 'browsers.json'), 'utf8')).browsers;
 const names = ['chromium', 'chromium-headless-shell', 'firefox', 'webkit', 'ffmpeg', 'winldd'];
@@ -27,6 +28,8 @@ const resources = definitions.filter((browser: any) => names.includes(browser.na
   return { from, to: `browsers/${folder}` };
 });
 await packageApp({ targets: Platform.WINDOWS.createTarget(['nsis', 'zip'], Arch.x64), config: { appId: 'local.developer-control-room', productName: 'Developer Control Room', directories: { app: stage, output }, electronVersion: '44.4.5', electronDist: resolve('node_modules/electron/dist'), asar: false, npmRebuild: false, files: ['**/*'], extraResources: resources, win: { signAndEditExecutable: false, artifactName: 'Developer-Control-Room-${version}-${arch}.${ext}' }, nsis: { oneClick: false, perMachine: false, allowElevation: false, allowToChangeInstallationDirectory: true, createDesktopShortcut: true, deleteAppDataOnUninstall: false, artifactName: 'Developer-Control-Room-Setup-${version}-${arch}.${ext}' }, publish: null } });
-const artifacts = readdirSync(output).filter(name => /\.(exe|zip)$/.test(name));
-writeFileSync(join(output, 'SHA256SUMS.txt'), artifacts.map(name => `${createHash('sha256').update(readFileSync(join(output, name))).digest('hex')}  ${name}`).join('\n') + '\n');
+const artifacts = readdirSync(output).filter(name => name.includes(`-${metadata.version}-`) && /\.(exe|zip)$/.test(name));
+const checksums = [];
+for (const name of artifacts) { const hash = createHash('sha256'); for await (const chunk of createReadStream(join(output, name))) hash.update(chunk); checksums.push(`${hash.digest('hex')}  ${name}`); }
+writeFileSync(join(output, 'SHA256SUMS.txt'), checksums.join('\n') + '\n');
 console.log('Local Windows release:', output);

@@ -38,3 +38,7 @@ The adapter is intended for deliberately designated local/test/staging fixtures.
 - New scenarios, runs, replays, and exported scenario payloads apply current redaction rules. Historical source records remain immutable.
 - Runs retain case ID and definition version, so duplicate names and edited cases cannot inherit another case's result.
 - Running records retain process ownership. Dead owners are recovered as failed at startup or deletion; legacy records require explicit stopped-runner confirmation through the CLI. Process IDs can be reused, so an existing PID is conservatively treated as active.
+
+## Version 0.3 extension
+
+Explicitly approved GET/POST/PUT/PATCH/DELETE fetch/XHR requests now support JSON request-body matching (exact/subset), with mismatches at a mutation endpoint blocked. Captures retain sanitized request and response payloads; routing metadata stays executable under custom redaction. Optional response schemas suggest bounded mutations for review. Matrix cancellation/resumption uses persisted plans and checkpoints. See ADVANCED.md for current boundaries; the original tradeoffs above describe the initial Phase 2 release.

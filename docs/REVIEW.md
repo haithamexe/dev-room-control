@@ -79,3 +79,26 @@ Reviewed against 426610e with independent Standards and Spec agents. User reques
 - Boundaries are documented in ADVANCED.md: explicit source/state instrumentation, bounded recording, and Stripe test probe do not claim automatic React ownership, arbitrary script import, or real checkout/webhook integration.
 
 Both agents confirmed the final focused fixes. All 29 original/added tests passed before the final recorder regression (which also passed independently), as did Phase 2 and Phase 3/4 gates. The packaged executable ran all three bundled browsers with Node removed from PATH; native screenshot/foreground validation subsequently passed; see LOCAL_RELEASE.md. The final matrix checkpoint regression also passed after the cancellation race fix.
+
+# Remaining non-Stripe workflows (0.3.0)
+
+Reviewed against f014e66 by independent Standards and Spec agents. User explicitly excluded Stripe expansion and kept Store submission deferred.
+
+## Standards
+
+- ANSI terminal escapes could reconstruct a known secret after redaction. Normalize escapes first; split-output/ANSI regression passes.
+- Iframe inputs were outside screenshot masks. Masks now cover every attached frame; pixel-level regression verifies private input masking.
+- Desktop quit bypassed command cleanup. IPC shutdown stops owned command trees and recording browsers, cancels matrices before their runs, rejects new mutations, and preserves remaining matrix plans. Native release smoke checks the command and matrix lifecycle.
+- Imported locators changed Playwright matching semantics. Imports now preserve exact/substring matching, with conversion diagnostics for unsupported options.
+- Final evidence could show a background tab. The screenshot follows the current flow tab; pixel-level regression verifies it.
+
+## Spec
+
+- Independently reproduced iframe privacy and wrong-tab evidence; both fixed and tested.
+- Newly derived request matchers were missing current redaction. A shared fixture sanitizer now handles response, request and schema payloads while preserving routing metadata.
+- Known flow inputs were scrubbed on only one side of request matching. Both sides now use the same normalization.
+- Revisiting a field reused the original environment reference. Separate editing episodes now get distinct references; consecutive keystrokes still coalesce.
+
+The Spec reviewer independently reran four focused regressions and confirmed the fixes. Remaining intentional limits are documented in ADVANCED.md: supported-subset script conversion, explicit recording navigation controls, development loader integrations, and best-effort React internals.
+
+Final validation: 39 tests passed, Phase 2 and Phase 3/4 gates passed, and the packaged app passed Chromium/Firefox/WebKit, visual create/edit/import, settings, command output, general context export, sandbox, owned-command shutdown and matrix preservation checks. Both reviewers confirmed their fixes.

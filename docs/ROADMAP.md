@@ -20,3 +20,7 @@ Phase 2 follow-ups: background/restart-resumable matrix scheduling, additional A
 Implemented: unsigned Windows installer and portable ZIP with embedded runtime/demo/browsers; worker isolation, cancellation, timeout and resumable matrix plans; Chromium/Firefox/WebKit selection; environment-backed login; interactive recording with review; all ten fixture payment cases; optional Stripe test PaymentIntent probe; Vite development JSX metadata; explicit handler/state/request scope evidence; TypeScript JSONC/baseUrl/paths resolution. See [advanced workflows and limits](ADVANCED.md) and [local release](LOCAL_RELEASE.md).
 
 Store product reserved via MSIX/PWA; submission, Store packaging and certification are deferred by the user. No code-signing certificate is needed for Store-managed MSIX signing after certification. The local EXE remains unsigned.
+
+## Local release 0.3.0
+
+Implemented the remaining non-Stripe workflow features: visual flow editing and supported-subset Playwright imports; dropdown/upload/iframe/popup recording and explicit navigation controls; five API methods, JSON body matching and schema suggestions; Webpack/Next development loader and optional React owner/state inspection; task command output/status/stop; scheduled retention with reference protection; framework/package-manager overrides. See ADVANCED.md for precise supported behavior and remaining boundaries. Stripe expansion and Store submission remain deferred.

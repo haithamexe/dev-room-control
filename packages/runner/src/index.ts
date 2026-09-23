@@ -1,3 +1,4 @@
+import { requestMatches, sanitizeFixture } from '../../core/src/api-matching.ts';
 import { captureInteractions } from './interactions.ts';
 import { chromium, type Browser, type BrowserContext } from 'playwright';
 import { zipSync, unzipSync, strFromU8, strToU8 } from 'fflate';
@@ -11,7 +12,7 @@ import { snapshot } from '../../repo-analysis/src/index.ts';
 import { mutateFixture, type ApiFixture, type ScenarioDefinition } from '../../core/src/reliability.ts';
 import { assertScenario, assertApiTarget } from '../../core/src/reliability-policy.ts';
 import { preparePayment, checkPayment } from './payment.ts';
-import { engines, authState, authSecrets, login, performStep } from './browser.ts';
+import { engines, authState, authSecrets, login, performStep, type FlowTabs } from './browser.ts';
 
 // Raw Playwright network resources can contain credentials. Keep action records only.
 export function sanitizeTrace(bytes: Uint8Array, fields: string[], inputs: string[] = []) {
@@ -23,6 +24,8 @@ export function sanitizeTrace(bytes: Uint8Array, fields: string[], inputs: strin
       if (['frame-snapshot', 'screencast-frame', 'log', 'console', 'event'].includes(entry.type)) return '';
       if (entry.params?.value) entry.params.value = '[REDACTED]';
       if (entry.params?.text) entry.params.text = '[REDACTED]';
+      if (entry.method === 'setInputFiles' || entry.apiName?.includes('setInputFiles')) entry.params = { selector: entry.params?.selector, files: '[UPLOAD OMITTED]' };
+      if (entry.params?.options && (entry.method === 'selectOption' || entry.apiName?.includes('selectOption'))) entry.params.options = '[INPUT OMITTED]';
       // Preserve only trace protocol metadata at the record boundary. Nested
       // request/response data must never inherit those exemptions.
       const clean = Object.fromEntries(Object.entries(entry).map(([key, value]) => [key, /^(type|method|apiName|class|callId|pageId|contextId|browserName|version|id|guid|sdkLanguage|origin|platform)$/.test(key) ? value : scrubInputs(value, inputs)]));
@@ -35,13 +38,14 @@ export function sanitizeTrace(bytes: Uint8Array, fields: string[], inputs: strin
 export function createRun(store: Store, project: Project, flow: Flow, replay?: Run, scenario?: ScenarioDefinition, scenarioId?: string): Run {
   assertTarget(replay?.baseUrl || project.baseUrl, project.baseUrl, project.config);
   const definition: ScenarioDefinition = structuredClone(replay?.scenario || scenario || { kind: 'baseline', name: 'Baseline', version: 1 });
-  if (definition.kind === 'api') definition.fixture.json = redact(definition.fixture.json, project.config.redactFields);
+  if (definition.kind === 'capture' && definition.request) definition.request.json = redact(definition.request.json, project.config.redactFields);
+  if (definition.kind === 'api') definition.fixture = sanitizeFixture(definition.fixture, project.config.redactFields);
   return store.put('runs', { id: id(), projectId: project.id, flowId: flow.id, name: replay?.name || (scenario ? `${flow.name} · ${scenario.name}` : flow.name), status: 'running', ownerPid: process.pid, startedAt: now(), baseUrl: replay?.baseUrl || project.baseUrl, flow: replay?.flow || { name: flow.name, description: flow.description, steps: flow.steps }, scenario: definition, browser: replay?.browser || project.config.browser, scenarioId: replay?.scenarioId || scenarioId, git: snapshot(project.path), replayOf: replay?.id });
 }
 export async function executeRun(store: Store, project: Project, run: Run, signal?: AbortSignal) {
-  let browser: Browser | undefined, context: BrowserContext | undefined;
+  let browser: Browser | undefined, context: BrowserContext | undefined, tabs: FlowTabs | undefined;
   const temp = mkdtempSync(join(tmpdir(), 'dcr-trace-'));
-  const inputs = run.flow.steps.flatMap(step => step.action === 'fill' ? [step.env ? process.env[step.env] || '' : step.value || ''] : []).filter(Boolean);
+  const inputs = run.flow.steps.flatMap(step => (step.action === 'fill' || step.action === 'select' || step.action === 'upload') ? [step.env ? process.env[step.env] || '' : ('value' in step ? step.value || '' : '')] : []).filter(Boolean);
   const abort = () => { void context?.close().catch(() => {}); }; signal?.addEventListener('abort', abort);
   const event = (kind: RunEvent['kind'], title: string, data: Record<string, unknown> = {}) => store.put('events', { id: id(), runId: run.id, projectId: project.id, at: now(), kind, title: redactText(scrubInputs(title, inputs)), data: redact(scrubInputs(data, inputs), project.config.redactFields) });
   const pending = new Set<Promise<void>>();
@@ -72,9 +76,10 @@ export async function executeRun(store: Store, project: Project, run: Run, signa
         assertTarget(url, run.baseUrl, project.config);
         if (project.config.ignoreUrls.some(pattern => url.includes(pattern))) return route.abort();
         const resource = route.request().resourceType();
-        const isApiRequest = ['fetch', 'xhr'].includes(resource) && route.request().method() === 'GET';
+        const isApiRequest = ['fetch', 'xhr'].includes(resource), method = route.request().method();
         if (run.scenario.kind === 'api' && isApiRequest && url === run.scenario.fixture.url) {
-          assertApiTarget(project, url);
+          assertApiTarget(project, url, run.scenario.fixture.method);
+          if (method !== run.scenario.fixture.method || !requestMatches(run.scenario.fixture.request, route.request().postData(), project.config.redactFields, inputs)) { event('request', 'Fixture method/body mismatch: target request blocked', { url, method }); await route.abort(); return; }
           const response = mutateFixture(run.scenario.fixture, run.scenario.mutation);
           event('request', 'Applied API mutation', { url, mutation: run.scenario.mutation, status: response.status, response: response.json, delayMs: response.delayMs });
           if (response.delayMs) await new Promise(resolve => setTimeout(resolve, response.delayMs));
@@ -87,11 +92,13 @@ export async function executeRun(store: Store, project: Project, run: Run, signa
           event('request', 'HTTP redirect blocked by target policy', { url, status: response.status(), location: response.headers().location });
           await route.abort(); return;
         }
-        if (run.scenario.kind === 'capture' && isApiRequest && url === run.scenario.url && !capturedFixture) {
-          assertApiTarget(project, url);
+        if (run.scenario.kind === 'capture' && isApiRequest && url === run.scenario.url && method === (run.scenario.method || 'GET') && requestMatches(run.scenario.request, route.request().postData(), project.config.redactFields, inputs) && !capturedFixture) {
+          assertApiTarget(project, url, method);
+          const rawBody = route.request().postData(); let requestBody: unknown;
+          if (rawBody !== null) { if (Buffer.byteLength(rawBody) > 64000) throw new Error('Capture request body exceeds 64 KB'); try { requestBody = JSON.parse(rawBody); } catch { throw new Error('Request-body capture supports JSON only'); } }
           if (response.status() < 200 || response.status() > 299 || !response.headers()['content-type']?.includes('application/json')) throw new Error('Fixture capture requires a successful JSON response');
           const bytes = await response.body(); if (bytes.length > 64000) throw new Error('Fixture capture exceeds 64 KB');
-          capturedFixture = store.put<ApiFixture>('api_fixtures', { id: id(), projectId: project.id, name: run.scenario.fixtureName, url, method: 'GET', status: response.status(), json: redact(scrubInputs(JSON.parse(bytes.toString()), inputs), project.config.redactFields), sourceRunId: run.id, version: 1, createdAt: now() });
+          capturedFixture = store.put<ApiFixture>('api_fixtures', { id: id(), projectId: project.id, name: run.scenario.fixtureName, url, method: method as ApiFixture['method'], request: rawBody !== null ? { mode: 'exact', json: redact(scrubInputs(requestBody, inputs), project.config.redactFields) as any } : undefined, status: response.status(), json: redact(scrubInputs(JSON.parse(bytes.toString()), inputs), project.config.redactFields), sourceRunId: run.id, version: 1, createdAt: now() });
           event('request', 'Captured sanitized API fixture', { fixtureId: capturedFixture.id, url, status: response.status() });
           signalCapture?.();
         }
@@ -99,10 +106,11 @@ export async function executeRun(store: Store, project: Project, run: Run, signa
       } catch (error) { event('request', 'Blocked or failed request', { url, error: String(error) }); await route.abort().catch(() => {}); }
     });
     await context.routeWebSocket('**/*', ws => ws.close());
-    const page = await context.newPage(); page.setDefaultTimeout(7000); page.setDefaultNavigationTimeout(15000);
+    let page = await context.newPage(); tabs = { current: page, pages: new Map([['main', page]]) }; context.setDefaultTimeout(7000); context.setDefaultNavigationTimeout(15000); page.setDefaultTimeout(7000); page.setDefaultNavigationTimeout(15000);
     await captureInteractions(page, project, data => event('action', 'Instrumented interaction', data));
     await login(page, project); signal?.throwIfAborted();
     await context.tracing.start({ screenshots: false, snapshots: false, sources: false });
+    const observe = (page: import('playwright').Page) => {
     page.on('console', msg => { if (['error', 'warning'].includes(msg.type())) event('console', msg.text(), { level: msg.type() }); });
     page.on('pageerror', error => { pageErrors.push(error.message); event('error', error.message); });
     page.on('framenavigated', frame => { if (frame === page.mainFrame()) event('navigation', 'Page navigation', { url: frame.url() }); });
@@ -117,18 +125,19 @@ export async function executeRun(store: Store, project: Project, run: Run, signa
           try { const body = await response.body(); if (body.length < 64000) data.body = JSON.parse(body.toString()); } catch { /* response may be interrupted */ }
         }
         event('request', `${request.method()} ${new URL(response.url()).pathname}`, data);
-        if (run.scenario.kind === 'api' && request.method() === 'GET' && ['fetch', 'xhr'].includes(request.resourceType()) && response.url() === run.scenario.fixture.url) {
+        if (run.scenario.kind === 'api' && request.method() === run.scenario.fixture.method && requestMatches(run.scenario.fixture.request, request.postData(), project.config.redactFields, inputs) && ['fetch', 'xhr'].includes(request.resourceType()) && response.url() === run.scenario.fixture.url) {
           matchedRequests++; signalMutation?.();
         }
       })().catch(() => {});
       pending.add(job); void job.finally(() => pending.delete(job));
     });
+    }; observe(page); context.on('page', observe);
     const orderId = await preparePayment(context, project, run, event);
     for (const [index, step] of run.flow.steps.entries()) {
       signal?.throwIfAborted();
       activeStep = `${index + 1}. ${step.action}${'name' in step ? ` · ${step.name}` : 'text' in step ? ` · ${step.text}` : ''}`;
       event('action', activeStep, { step: index + 1, action: step.action });
-      await performStep(page, step, project, run.baseUrl, orderId);
+      await performStep(page, step, project, run.baseUrl, orderId, tabs); page = tabs.current;
       if (step.action === 'goto' && run.scenario.kind === 'payment' && run.scenario.paymentCase === 'refresh-before-confirmation') { await page.reload({ waitUntil: 'domcontentloaded' }); event('action', 'Refresh before confirmation'); }
       if (step.action === 'assertText') event('assertion', `Visible: ${step.text}`, { expected: step.text, observed: 'visible', passed: true });
     }
@@ -161,10 +170,10 @@ export async function executeRun(store: Store, project: Project, run: Run, signa
   } finally {
     if (context) {
       try {
-        const page = context.pages()[0];
+        const page = tabs?.current && !tabs.current.isClosed() ? tabs.current : context.pages().find(page => !page.isClosed());
         if (page && !page.isClosed()) {
           // Mask form fields, explicit private regions, and common personal-data text.
-          const masks = [page.locator('input, textarea, [data-private], [autocomplete]'), page.getByText(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|\b(?:\d[ -]*?){13,19}\b/), ...inputs.map(value => page.getByText(value)), ...project.config.maskSelectors.map(s => page.locator(s))];
+          const masks = page.frames().flatMap(frame => [frame.locator('input, textarea, select, [data-private], [autocomplete]'), frame.getByText(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|\b(?:\d[ -]*?){13,19}\b/), ...inputs.map(value => frame.getByText(value)), ...project.config.maskSelectors.map(s => frame.locator(s))]);
           store.artifact(project.id, run.id, 'screenshot.png', 'image/png', await page.screenshot({ fullPage: false, mask: masks, animations: 'disabled', timeout: 5000 }));
         }
       } catch (e) { event('error', 'Screenshot unavailable', { error: String(e) }); }
@@ -180,7 +189,7 @@ export async function executeRun(store: Store, project: Project, run: Run, signa
     }
     run.endedAt = now();
     if (run.result) run.result = redact(scrubInputs(run.result, inputs), project.config.redactFields);
-    if (run.scenario.kind === 'api') run.scenario.fixture.json = redact(scrubInputs(run.scenario.fixture.json, inputs), project.config.redactFields);
+    if (run.scenario.kind === 'api') run.scenario.fixture = sanitizeFixture(run.scenario.fixture, project.config.redactFields, inputs);
     store.put('runs', run);
     if (run.scenario.kind && run.scenario.kind !== 'baseline') store.artifact(project.id, run.id, 'scenario.json', 'application/json', Buffer.from(JSON.stringify({ scenario: run.scenario, result: run.result, error: run.error }, null, 2)));
     store.artifact(project.id, run.id, 'timeline.json', 'application/json', Buffer.from(JSON.stringify(store.list<RunEvent>('events', project.id).filter(e => e.runId === run.id).reverse(), null, 2)));

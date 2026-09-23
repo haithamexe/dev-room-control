@@ -23,7 +23,7 @@ else {
     const launchId = require('node:crypto').randomUUID();
     const env = { ...process.env, ELECTRON_RUN_AS_NODE: '1', DCR_PORT: String(port), DCR_DATA_DIR: data, DCR_LAUNCH_ID: launchId };
     if (app.isPackaged) { env.DCR_WORKER_ENTRY = path.join(root, 'worker.mjs'); env.PLAYWRIGHT_BROWSERS_PATH = path.join(process.resourcesPath, 'browsers'); }
-    service = spawn(process.execPath, app.isPackaged ? [path.join(root, 'backend.mjs')] : ['--import', 'tsx', 'apps/service/src/server.ts'], { cwd: root, env, windowsHide: true, stdio: ['ignore', log, log] });
+    service = spawn(process.execPath, app.isPackaged ? [path.join(root, 'backend.mjs')] : ['--import', 'tsx', 'apps/service/src/server.ts'], { cwd: root, env, windowsHide: true, stdio: ['ignore', log, log, 'ipc'] });
     closeSync(log);
     let failed = false;
     service.on('error', () => { failed = true; });
@@ -44,4 +44,20 @@ else {
   }).catch(error => { dialog.showErrorBox('Unable to open Developer Control Room', error.message); app.quit(); });
 }
 app.on('window-all-closed', () => app.quit());
-app.on('before-quit', () => { mainWindow = undefined; service?.kill(); if (endpointFile) { try { unlinkSync(endpointFile); } catch {} } });
+let quitting = false, serviceStopped = false;
+app.on('before-quit', event => {
+  mainWindow = undefined;
+  if (service && !serviceStopped && service.exitCode === null && service.connected) {
+    event.preventDefault(); if (quitting) return; quitting = true;
+    const finish = () => { serviceStopped = true; clearTimeout(timer); app.quit(); };
+    service.once('exit', finish);
+    const timer = setTimeout(() => {
+      // The fallback is restricted to this application's still-owned service tree.
+      if (process.platform === 'win32' && service.pid) { const killer = spawn('taskkill.exe', ['/PID', String(service.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); killer.on('error', () => { service.kill(); }); }
+      else service.kill();
+    }, 8000);
+    service.send({ type: 'dcr-shutdown' }, error => { if (error) service.kill(); });
+    return;
+  }
+  if (endpointFile) { try { unlinkSync(endpointFile); } catch {} }
+});

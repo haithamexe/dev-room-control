@@ -11,16 +11,25 @@ export const modules = [
   { id: 'risk', name: 'PR Risk Map', description: 'Understand the reach of a change.', phase: 3 },
   { id: 'context', name: 'Context Resurrection', description: 'Pick up exactly where you left off.', phase: 4 },
 ] as const;
+const scope = { exact: z.boolean().optional(), tab: z.string().regex(/^[a-zA-Z][\w-]{0,39}$/).optional(), frames: z.array(z.string().min(1).max(300)).max(5).optional() };
+const inputValue = { value: z.string().optional(), env: z.string().regex(/^[A-Z_][A-Z0-9_]*$/i).optional() };
 export const stepSchema = z.discriminatedUnion('action', [
-  z.object({ action: z.literal('goto'), url: z.string().min(1) }),
-  z.object({ action: z.literal('click'), role: z.enum(['button', 'link', 'checkbox']).default('button'), name: z.string().min(1) }),
-  z.object({ action: z.literal('fill'), label: z.string().min(1), value: z.string().optional(), env: z.string().optional() }).refine(s => Boolean(s.env) !== (s.value !== undefined), 'Provide value or an environment variable reference'),
-  z.object({ action: z.literal('assertText'), text: z.string().min(1) }),
-  z.object({ action: z.literal('reload') }), z.object({ action: z.literal('back') }),
-  z.object({ action: z.literal('forward') }),
-  z.object({ action: z.literal('select'), label: z.string().min(1), value: z.string().min(1) }),
-  z.object({ action: z.literal('check'), label: z.string().min(1), checked: z.boolean() }),
-]);
+  z.object({ ...scope, action: z.literal('goto'), url: z.string().min(1) }),
+  z.object({ ...scope, action: z.literal('click'), role: z.enum(['button', 'link', 'checkbox']).default('button'), name: z.string().min(1) }),
+  z.object({ ...scope, action: z.literal('fill'), label: z.string().min(1), ...inputValue }),
+  z.object({ ...scope, action: z.literal('assertText'), text: z.string().min(1) }),
+  z.object({ ...scope, action: z.literal('reload') }), z.object({ ...scope, action: z.literal('back') }),
+  z.object({ ...scope, action: z.literal('forward') }),
+  z.object({ ...scope, action: z.literal('select'), selector: z.string().min(1).max(500).optional(), label: z.string().min(1), ...inputValue }),
+  z.object({ ...scope, action: z.literal('check'), label: z.string().min(1), checked: z.boolean() }),
+  z.object({ ...scope, action: z.literal('upload'), label: z.string().min(1), env: z.string().regex(/^[A-Z_][A-Z0-9_]*$/i) }),
+  z.object({ ...scope, action: z.literal('newTab'), name: z.string().regex(/^[a-zA-Z][\w-]{0,39}$/), url: z.string().min(1) }),
+  z.object({ ...scope, action: z.literal('switchTab'), name: z.string().regex(/^[a-zA-Z][\w-]{0,39}$/) }),
+  z.object({ ...scope, action: z.literal('closeTab') }),
+  z.object({ ...scope, action: z.literal('popup'), role: z.enum(['button', 'link']).default('link'), name: z.string().min(1), popupTab: z.string().regex(/^[a-zA-Z][\w-]{0,39}$/) }),
+]).superRefine((step, ctx) => {
+  if ((step.action === 'fill' || step.action === 'select') && Boolean(step.env) === (step.value !== undefined)) ctx.addIssue({ code: 'custom', message: 'Provide value or an environment variable reference' });
+});
 export const flowSchema = z.object({ name: z.string().min(1).max(120), description: z.string().max(500).default(''), steps: z.array(stepSchema).min(1).max(100) });
 export const configSchema = z.object({
   environment: z.enum(['local', 'test', 'staging']).default('local'), allowedOrigins: z.array(z.url()).default([]),
@@ -30,10 +39,12 @@ export const configSchema = z.object({
   reliability: reliabilityConfigSchema.default(() => reliabilityConfigSchema.parse({})),
   browser: z.enum(['chromium', 'firefox', 'webkit']).default('chromium'),
   execution: z.object({ timeoutMs: z.number().int().min(1000).max(1800000).default(120000) }).default(() => ({ timeoutMs: 120000 })),
-  auth: z.object({ storageStateEnv: z.string().regex(/^[A-Z_][A-Z0-9_]*$/i).optional(), loginFlow: flowSchema.refine(f => f.steps.every(s => s.action !== 'fill' || Boolean(s.env)), 'Login inputs must use environment references').optional() }).default({}),
+  auth: z.object({ storageStateEnv: z.string().regex(/^[A-Z_][A-Z0-9_]*$/i).optional(), loginFlow: flowSchema.refine(f => f.steps.every(s => !['fill', 'select'].includes(s.action) || ('env' in s && Boolean(s.env))), 'Login inputs must use environment references').optional() }).default({}),
   captureBodies: z.boolean().default(false), ignoreUrls: z.array(z.string()).default([]),
   redactFields: z.array(z.string()).default([]), maskSelectors: z.array(z.string()).default([]),
   commands: z.record(z.string(), z.string()).default({}), retentionDays: z.number().int().min(1).max(3650).default(30),
+  scheduledCleanup: z.boolean().default(false),
+  detectionOverride: z.object({ framework: z.string().min(1).max(80).optional(), packageManager: z.enum(['npm', 'pnpm', 'yarn', 'bun']).optional() }).default({}),
 });
 export type Config = z.infer<typeof configSchema>;
 export type FlowDefinition = z.infer<typeof flowSchema>;

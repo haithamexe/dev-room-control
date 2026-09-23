@@ -29,7 +29,7 @@ export async function inspectPage<T>(project: Project, route: string, inspect: (
   } finally { await browser.close(); }
 }
 export async function evidenceScreenshot(page: Page, project: Project) {
-  return page.screenshot({ animations: 'disabled', mask: [page.locator('input, textarea, [data-private], [autocomplete]'), page.getByText(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|\b(?:\d[ -]*?){13,19}\b/), ...project.config.maskSelectors.map(s => page.locator(s)), ...authSecrets(project).map(value => page.getByText(value, { exact: false }))] });
+  return page.screenshot({ animations: 'disabled', mask: page.frames().flatMap(frame => [frame.locator('input, textarea, select, [data-private], [autocomplete]'), frame.getByText(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|\b(?:\d[ -]*?){13,19}\b/), ...project.config.maskSelectors.map(s => frame.locator(s)), ...authSecrets(project).map(value => frame.getByText(value, { exact: false }))]) });
 }
 export function bridgeSource(project: Project, metadata: { file?: string; line?: string; component?: string; provenance?: string }): SourceLink[] {
   if (!project.config.understanding.bridgeEnabled || !metadata.file) return [];

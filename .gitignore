@@ -5,3 +5,9 @@ dist/
 test-results/
 *.log
 build-artifacts/
+
+.env
+.env.*
+!.env.example
+*.pem
+*.key

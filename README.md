@@ -1,8 +1,14 @@
 # Developer Control Room
 
+Maintained by [Haitham Jalal (@haithamexe)](https://github.com/haithamexe). [Project repository](https://github.com/haithamexe/dev-room-control).
+
 A local developer dashboard for investigations, reproducible browser flows, code impact, and session continuity. **All four phases of [the build spec](BUILD_SPEC.md) are implemented** at their defined MVP scope. All eight modules are available, with a general **Copy context for AI** action on projects, flows, runs, findings, scenarios, tasks, reports, and saved sessions. No AI account or provider is required.
 
-## Start here
+## Local Windows app
+
+Version 0.3.0 includes a local installer and portable ZIP with all browser engines. See [local release](docs/LOCAL_RELEASE.md) and [advanced workflows](docs/ADVANCED.md). No separate Node.js installation is needed for the packaged app. Store submission remains deferred.
+
+## Start from source
 
 Requires **Node.js 24+**, npm, and Git. Windows is the verified development platform. Linux/macOS use the same Node commands; native desktop packaging is not included yet.
 
@@ -36,9 +42,9 @@ The native smoke check is `npm run test:desktop` (two cold starts on ports 4320/
 
 ## Use your own repository
 
-Choose **Add project**, enter an existing directory and a localhost URL. Start that project's dev server yourself, or configure a command under Settings and add it to a task preset. Detection reports framework, package manager, and Git root. Any local HTTP frontend can be tested; there is no automatic React/Next.js component mapping in Phase 1.
+Choose **Add project**, enter an existing directory and a localhost URL. Start that project's dev server yourself, or configure a command under Settings and add it to a task preset. Detection reports framework, package manager, and Git root. Any local HTTP frontend can be tested; optional Vite/Webpack/Next source instrumentation and React runtime inspection are available; see the advanced workflow guide.
 
-Flows are portable JSON definitions executed through Playwright, not arbitrary JavaScript. Create/import them from Bug Time Machine, or with the CLI:
+Flows are portable definitions executed through Playwright. The visual editor supports step editing and recording, JSON import, and conversion of supported Playwright test scripts with explicit warnings for unsupported code. Create/import them from Bug Time Machine, or with the CLI:
 
 ```json
 {
@@ -54,7 +60,7 @@ Flows are portable JSON definitions executed through Playwright, not arbitrary J
 }
 ```
 
-Supported actions: `goto`, `click` (button/link/checkbox role + exact accessible name), `fill` (exact label + value **or** environment reference), `assertText` (exact visible text), `reload`, and `back`. Environment variables must be available to the running service or CLI. URL query data and sensitive literal inputs are rejected. Every replay stores the original flow, base URL, scenario version, browser version, Git commit/dirty state, and timestamps. Replay uses the current safety configuration and environment references; it does not restore the old repository commit or external server state.
+Supported actions include `goto`, `click`, `fill`, `select`, `check`, `upload`, `assertText`, `reload`, `back`, `forward`, `newTab`, `switchTab`, `closeTab`, and click-triggered `popup`. Steps can target tabs and nested iframe scopes. Accessible names match exactly by default; imported scripts preserve their matching mode. Environment variables must be available to the running service or CLI. URL query data and sensitive literal inputs are rejected. Every replay stores the original flow, base URL, scenario version, browser version, Git commit/dirty state, and timestamps. Replay uses the current safety configuration and environment references; it does not restore the old repository commit or external server state.
 
 ## CLI
 
@@ -208,3 +214,4 @@ For the new modules, general AI handoff, exact commands, token rules, bridge set
 ## Windows local release
 
 See [local installer and portable instructions](docs/LOCAL_RELEASE.md) and [advanced workflows](docs/ADVANCED.md). Build with `npm run package:windows`; verify the packaged runtime with `npm run test:release`. Microsoft Store submission remains deferred.
+# dev-room-control
