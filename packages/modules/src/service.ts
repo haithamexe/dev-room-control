@@ -11,12 +11,14 @@ import { createRun, executeRun } from '../../runner/src/index.ts';
 import { ReliabilityCommands } from './reliability.ts';
 import { assertScenario } from '../../core/src/reliability-policy.ts';
 import { paymentCases, type ScenarioDefinition, type Scenario, type ApiFixture } from '../../core/src/reliability.ts';
+import { UnderstandingCommands } from './understanding.ts';
 
 export class ControlRoom extends EventEmitter {
   active = new Map<string, Promise<Run>>();
   processes = new Set<ReturnType<typeof spawn>>();
   reliability: ReliabilityCommands;
-  constructor(public store: Store) { super(); this.reliability = new ReliabilityCommands(store, (flow, scenario, scenarioId) => this.startRun(flow, scenario, undefined, scenarioId), this.active); this.recoverInterrupted(); }
+  understanding: UnderstandingCommands;
+  constructor(public store: Store) { super(); this.reliability = new ReliabilityCommands(store, (flow, scenario, scenarioId) => this.startRun(flow, scenario, undefined, scenarioId), this.active); this.understanding = new UnderstandingCommands(store); this.recoverInterrupted(); }
   addProject(input: unknown) {
     const data = z.object({ name: z.string().min(1).max(100), path: z.string().min(1), baseUrl: z.url(), config: configSchema.optional() }).parse(input);
     const path = realpathSync(data.path); if (!statSync(path).isDirectory()) throw new Error('Choose a repository directory');
@@ -91,7 +93,7 @@ export class ControlRoom extends EventEmitter {
   }
   recoverInterrupted(projectId?: string, confirmLegacyStopped = false) {
     let recovered = 0;
-    for (const table of ['runs', 'matrices'] as const) {
+    for (const table of ['runs', 'matrices', 'environments'] as const) {
       for (const record of this.store.list<{ id: string; status: string; ownerPid?: number; endedAt?: string; error?: string }>(table, projectId)) {
         if (record.status !== 'running') continue;
         if (record.ownerPid) {
@@ -107,6 +109,8 @@ export class ControlRoom extends EventEmitter {
     const project = this.store.get<Project>('projects', projectId);
     if (confirmation !== project.name) throw new Error('Type the project name to confirm deletion');
     this.recoverInterrupted(projectId);
+    if ([...this.understanding.active].some(key => key.startsWith(projectId + ':'))) throw new Error('Wait for active inspections to finish before deleting');
+    if (this.store.list<{kind: string; status: string}>('environments', projectId).some(e => e.kind === 'inspection-lock' && e.status === 'running')) throw new Error('Wait for active inspections to finish before deleting');
     if (this.store.list<Run>('runs', projectId).some(r => r.status === 'running')) throw new Error('Wait for active runs to finish before deleting');
     if (this.store.list<{id: string; status: string}>('matrices', projectId).some(m => m.status === 'running')) throw new Error('Wait for active matrices to finish before deleting');
     this.store.deleteProject(projectId); return { deleted: true };

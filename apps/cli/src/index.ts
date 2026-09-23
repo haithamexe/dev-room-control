@@ -2,12 +2,18 @@ import { readFileSync } from 'node:fs';
 import { Store } from '../../../packages/storage/src/index.ts';
 import { ControlRoom } from '../../../packages/modules/src/service.ts';
 import type { Flow, Run, Project } from '../../../packages/core/src/index.ts';
+import { handoff } from '../../../packages/modules/src/handoff.ts';
 const store = new Store(), service = new ControlRoom(store);
 const [command, ...args] = process.argv.slice(2);
 try {
   let result: unknown;
   if (command === 'demo') result = await service.seedDemo();
   else if (command === 'projects') result = store.list('projects');
+  else if (command === 'risk') result = service.understanding.risk(args[0], { base: args[1] || 'HEAD' });
+  else if (command === 'drift') result = await service.understanding.drift(args[0], JSON.parse(readFileSync(args[1], 'utf8')));
+  else if (command === 'element') result = await service.understanding.element(args[0], { route: args[1], selector: args[2] });
+  else if (command === 'session') result = service.understanding.session(args[0], args[1] ? JSON.parse(readFileSync(args[1], 'utf8')) : {});
+  else if (command === 'handoff') { console.log(handoff(store, { kind: args[0], id: args[1], includeSource: !args.includes('--no-source') }).text); }
   else if (command === 'add') result = service.addProject({ path: args[0], name: args[1], baseUrl: args[2] || 'http://localhost:3000' });
   else if (command === 'import-project') { const config = JSON.parse(readFileSync(args[1], 'utf8')); result = service.addProject({ ...config, path: args[0] }); }
   else if (command === 'flows') result = store.list('flows', args[0]);
@@ -33,7 +39,7 @@ try {
     if (!args[0]) throw new Error('Provide a project ID');
     result = service.recoverInterrupted(args[0], args.includes('--confirm-legacy-stopped'));
   }
-  else { console.log('Developer Control Room\n\n  demo\n  projects\n  add <repo> <name> [url]\n  import-project <repo> <config.json>\n  flows [project-id]\n  import <project-id> <flow.json>\n  run <flow-id>\n  replay <run-id>\n  runs [project-id]\n  inspect <run-id>\n  setup-labs <project-id> --confirm-fixtures\n  fixtures [project-id]\n  capture <project-id> <flow-id> <url> [name]\n  save-fixture <project-id> <fixture.json> [fixture-id]\n  save-scenario <project-id> <scenario.json> [scenario-id]\n  scenarios [project-id]\n  scenario <scenario-id>\n  matrix <project-id> <scenario-id>...\n  task-preview <task-id>\n  task-launch <task-id> --approve-command\n  recover <project-id> [--confirm-legacy-stopped]\n  delete-project <project-id> "exact project name"'); }
+  else { console.log('Developer Control Room\n\n  demo\n  projects\n  add <repo> <name> [url]\n  import-project <repo> <config.json>\n  flows [project-id]\n  import <project-id> <flow.json>\n  run <flow-id>\n  replay <run-id>\n  runs [project-id]\n  inspect <run-id>\n  setup-labs <project-id> --confirm-fixtures\n  fixtures [project-id]\n  capture <project-id> <flow-id> <url> [name]\n  save-fixture <project-id> <fixture.json> [fixture-id]\n  save-scenario <project-id> <scenario.json> [scenario-id]\n  scenarios [project-id]\n  scenario <scenario-id>\n  matrix <project-id> <scenario-id>...\n  task-preview <task-id>\n  task-launch <task-id> --approve-command\n  risk <project-id> [base]\n  drift <project-id> <scan.json>\n  element <project-id> <route> <selector>\n  session <project-id> [session.json]\n  handoff <project|run|finding|scenario|report|task|session|flow> <id> [--no-source]\n  recover <project-id> [--confirm-legacy-stopped]\n  delete-project <project-id> "exact project name"'); }
   if (result) console.log(JSON.stringify(result, null, 2));
 } catch (error) { console.error(error instanceof Error ? error.message : error); process.exitCode = 1; }
 finally { store.close(); }

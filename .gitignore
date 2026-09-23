@@ -4,3 +4,4 @@ dist/
 .devcontrolroom.json
 test-results/
 *.log
+build-artifacts/

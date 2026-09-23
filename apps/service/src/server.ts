@@ -10,6 +10,8 @@ import { modules, configSchema, type Project, type Run, type Finding, type RunEv
 import type { ApiFixture, Scenario, Matrix } from '../../../packages/core/src/reliability.ts';
 import { redact, redactText } from '../../../packages/core/src/redact.ts';
 import { snapshot, safeSource } from '../../../packages/repo-analysis/src/index.ts';
+import { sourceText } from '../../../packages/repo-analysis/src/sources.ts';
+import { handoff } from '../../../packages/modules/src/handoff.ts';
 const require = createRequire(import.meta.url);
 export function startServer(port = Number(process.env.DCR_PORT || 4310), store = new Store()) {
   const service = new ControlRoom(store), token = randomBytes(32).toString('hex');
@@ -32,8 +34,10 @@ export function startServer(port = Number(process.env.DCR_PORT || 4310), store =
       if (method === 'GET' && parts[1] === 'session') return send({ token });
       if (!['GET', 'HEAD'].includes(method || '') && req.headers['x-dcr-token'] !== token) return send({ error: 'Reload the dashboard to renew your local session' }, 403);
       if (method === 'GET' && parts[1] === 'overview') {
-        return send({ projects: store.list<Project>('projects').map(p => ({ ...p, config: configSchema.parse(p.config), git: snapshot(p.path) })), runs: store.list<Run>('runs'), findings: store.list('findings'), flows: store.list('flows'), tasks: store.list('task_presets'), notes: store.list('notes'), fixtures: store.list('api_fixtures'), scenarios: store.list('scenarios'), matrices: store.list('matrices'), modules });
+        return send({ projects: store.list<Project>('projects').map(p => ({ ...p, config: configSchema.parse(p.config), git: snapshot(p.path) })), runs: store.list<Run>('runs'), findings: store.list('findings'), flows: store.list('flows'), tasks: store.list('task_presets'), notes: store.list('notes'), fixtures: store.list('api_fixtures'), scenarios: store.list('scenarios'), matrices: store.list('matrices'), reports: store.list('reports'), sessions: store.list('repo_snapshots'), modules });
       }
+      if (method === 'POST' && parts[1] === 'handoff') return send(handoff(store, await body(req)));
+      if (method === 'GET' && parts[1] === 'reports' && parts[2]) return send(store.get('reports', parts[2]));
       if (method === 'POST' && parts[1] === 'demo') return send(await service.seedDemo());
       if (method === 'POST' && parts.length === 2 && parts[1] === 'projects') return send(service.addProject(await body(req)), 201);
       if (parts[1] === 'projects' && parts[2]) {
@@ -48,8 +52,12 @@ export function startServer(port = Number(process.env.DCR_PORT || 4310), store =
         if (method === 'POST' && parts[3] === 'scenarios') return send(service.reliability.saveScenario(projectId, await body(req)), 201);
         if (method === 'POST' && parts[3] === 'matrices') return send(service.reliability.matrix(projectId, await body(req)), 202);
         if (method === 'POST' && parts[3] === 'setup-labs') return send(service.setupDemoLabs(projectId, await body(req)));
+        if (method === 'POST' && parts[3] === 'risk') return send(service.understanding.risk(projectId, await body(req)));
+        if (method === 'POST' && parts[3] === 'drift') return send(await service.understanding.drift(projectId, await body(req)));
+        if (method === 'POST' && parts[3] === 'element') return send(await service.understanding.element(projectId, await body(req)));
+        if (method === 'POST' && parts[3] === 'session') return send(service.understanding.session(projectId, await body(req)));
         if (method === 'PUT' && parts[3] === 'notes') { const data = await body(req); return send(store.put('notes', { id: projectId, projectId, text: redactText(String(data.text || '').slice(0, 10000)), nextStep: redactText(String(data.nextStep || '').slice(0, 1000)) })); }
-        if (method === 'GET' && parts[3] === 'source') { const p = store.get<Project>('projects', projectId), file = safeSource(p.path, url.searchParams.get('path') || ''); if (statSync(file).size > 256000) throw new Error('Source file too large'); return send({ path: file, content: redactText(readFileSync(file, 'utf8')) }); }
+        if (method === 'GET' && parts[3] === 'source') return send(sourceText(service.understanding.project(projectId), url.searchParams.get('path') || ''));
       }
       if (method === 'POST' && parts[1] === 'flows' && parts[3] === 'run') return send(service.run(parts[2]), 202);
       if (parts[1] === 'fixtures' && parts[2] && method === 'PUT') { const fixture = store.get<ApiFixture>('api_fixtures', parts[2]); return send(service.reliability.saveFixture(fixture.projectId, await body(req), fixture.id)); }
@@ -75,6 +83,7 @@ export function startServer(port = Number(process.env.DCR_PORT || 4310), store =
       }
       if (method === 'PATCH' && parts[1] === 'findings') {
         const finding = store.get<Finding>('findings', parts[2]), data = await body(req);
+        if (data.disposition) return send(service.understanding.disposition(finding.id, data.disposition));
         if (!['open', 'resolved', 'suppressed'].includes(data.status)) throw new Error('Invalid finding status');
         finding.status = data.status; return send(store.put('findings', finding));
       }

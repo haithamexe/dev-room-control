@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { reliabilityConfigSchema, type ScenarioDefinition, type ScenarioResult } from './reliability.ts';
+import { understandingSchema, type SourceLink } from './understanding.ts';
 export const modules = [
   { id: 'time-machine', name: 'Bug Time Machine', description: 'Record, inspect, and replay browser flows.', phase: 1 },
   { id: 'tasks', name: 'Workspace Launcher', description: 'Your files, URLs, and commands in one place.', phase: 1 },
@@ -20,7 +21,9 @@ export const stepSchema = z.discriminatedUnion('action', [
 export const flowSchema = z.object({ name: z.string().min(1).max(120), description: z.string().max(500).default(''), steps: z.array(stepSchema).min(1).max(100) });
 export const configSchema = z.object({
   environment: z.enum(['local', 'test', 'staging']).default('local'), allowedOrigins: z.array(z.url()).default([]),
-  modules: z.array(z.enum(['time-machine', 'tasks', 'api', 'payments'])).default(['time-machine', 'tasks']),
+  modules: z.array(z.enum(['time-machine', 'tasks', 'api', 'payments', 'drift', 'why', 'risk', 'context'])).default(['time-machine', 'tasks', 'drift', 'why', 'risk', 'context']),
+  understanding: understandingSchema.default(() => understandingSchema.parse({})),
+  ignorePaths: z.array(z.string().min(1)).default([]),
   reliability: reliabilityConfigSchema.default(() => reliabilityConfigSchema.parse({})),
   captureBodies: z.boolean().default(false), ignoreUrls: z.array(z.string()).default([]),
   redactFields: z.array(z.string()).default([]), maskSelectors: z.array(z.string()).default([]),
@@ -33,6 +36,6 @@ export type Project = { id: string; name: string; path: string; baseUrl: string;
 export type Run = { id: string; ownerPid?: number; scenarioId?: string; projectId: string; flowId: string; name: string; status: 'running' | 'passed' | 'failed'; startedAt: string; endedAt?: string; error?: string; baseUrl: string; flow: FlowDefinition; scenario: ScenarioDefinition; result?: ScenarioResult; git: { branch: string; commit: string; dirty: boolean }; browserVersion?: string; replayOf?: string };
 export type RunEvent = { id: string; runId: string; at: string; kind: 'action' | 'navigation' | 'console' | 'request' | 'assertion' | 'error' | 'marker'; title: string; data: Record<string, unknown> };
 export type Artifact = { id: string; runId: string; projectId: string; path: string; mediaType: string; name: string; hash: string; redacted: boolean };
-export type Finding = { id: string; runId: string; projectId: string; title: string; expected: string; observed: string; status: 'open' | 'resolved' | 'suppressed'; createdAt: string };
+export type Finding = { id: string; runId?: string; reportId?: string; fingerprint?: string; sources?: SourceLink[]; projectId: string; title: string; expected: string; observed: string; status: 'open' | 'resolved' | 'suppressed'; createdAt: string };
 export const taskSchema = z.object({ name: z.string().min(1), files: z.array(z.string()).default([]), urls: z.array(z.url()).default([]), command: z.string().optional(), branch: z.string().default(''), flowId: z.string().optional(), notes: z.string().default('') });
 export type Task = z.infer<typeof taskSchema> & { id: string; projectId: string };

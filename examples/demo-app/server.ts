@@ -1,8 +1,10 @@
 import { createServer } from 'node:http';
 import { serveLabs, type FixtureOrder } from './labs.ts';
+import { serveDesign } from './design.ts';
 export function startDemo(port = Number(process.env.DEMO_PORT || 4400), fixed = process.env.DEMO_FIXED === '1') {
   const orders = new Map<string, FixtureOrder>();
   const server = createServer(async (req, res) => {
+    if (req.url === '/design') return serveDesign(res, fixed);
     if (await serveLabs(req, res, fixed, orders)) return;
     if (req.url === '/favicon.ico') { res.writeHead(204); return res.end(); }
     if (req.url === '/api/confirm') {

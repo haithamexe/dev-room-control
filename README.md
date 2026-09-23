@@ -1,6 +1,6 @@
 # Developer Control Room
 
-A local developer dashboard for reproducible browser failures. **Phases 1 and 2 of [the build spec](BUILD_SPEC.md) are implemented**: browser capture/replay, offline evidence, task presets, API response mutations, and fixture-based payment stress tests. Four modules are available; the remaining four are explicitly marked as roadmap items.
+A local developer dashboard for investigations, reproducible browser flows, code impact, and session continuity. **All four phases of [the build spec](BUILD_SPEC.md) are implemented** at their defined MVP scope. All eight modules are available, with a general **Copy context for AI** action on projects, flows, runs, findings, scenarios, tasks, reports, and saved sessions. No AI account or provider is required.
 
 ## Start here
 
@@ -175,7 +175,7 @@ npm run test:gate
 npm run test:phase2
 ```
 
-The 16 focused tests cover migrations, persistence/deletion and interrupted-work recovery, redaction, trace sanitization, target/redirect restrictions, dirty-worktree/path handling, deterministic mutation semantics, completed mutation delivery, scenario identity/version display, JSON Pointer confinement, and payment approval/ignore rules. The Phase 1 gate starts a fixture server on **4411** and dashboard on **4311**, then checks:
+The focused tests cover migrations, persistence/deletion and interrupted-work recovery, redaction, trace sanitization, target/redirect restrictions, dirty-worktree/path handling, deterministic mutation semantics, completed mutation delivery, scenario identity/version display, JSON Pointer confinement, payment approval/ignore rules, import-graph classification, and general AI handoff privacy. The Phase 1 gate starts a fixture server on **4411** and dashboard on **4311**, then checks:
 
 1. A real failure has its preceding action, HTTP 500, console error, screenshot, trace and timeline.
 2. Replay reproduces the failure even after changing the current flow definition.
@@ -197,8 +197,10 @@ Stop the faulty demo before starting the corrected one. In bash: `DEMO_FIXED=1 n
 
 ## Architecture and remaining work
 
-See [ADR 001](docs/adr/001-local-modular-monolith.md), [ADR 002](docs/adr/002-reliability-scenarios.md), and [roadmap](docs/ROADMAP.md). This is a source-distributed application, not an installer release. Supported now: Chromium, JSON flows, local SQLite, local trace viewer, Electron shell, CLI, seven API mutations, and three fixture-only payment scenarios. Not implemented: interactive click recording, arbitrary Playwright script import, automatic source/component mapping, additional browsers, real payment gateway adapters, visual drift analysis, PR risk maps, full Context Resurrection, or the optional VS Code extension. Run/matrix scheduling is in-process; active work is not automatically resumed after a forced shutdown.
+See [ADR 001](docs/adr/001-local-modular-monolith.md), [ADR 002](docs/adr/002-reliability-scenarios.md), [ADR 003](docs/adr/003-understanding-and-continuity.md), and [roadmap](docs/ROADMAP.md). The desktop is source-distributed, not a signed installer release. Supported now: Chromium, JSON flows, local SQLite, trace viewer, Electron shell, CLI, seven API mutations, three fixture-only payment scenarios, explicit-token drift checks, instrumented element/source inspection, static PR impact, session resurrection, AI context export, and an optional VS Code extension. Not implemented: interactive click recording, arbitrary Playwright script import, automatic compiler source mapping, additional browsers, real payment gateway adapters, or cloud/AI provider connections. Run/matrix scheduling is in-process; active work is not automatically resumed after a forced shutdown.
 
 Runs and matrices record their owning process. At startup and before project deletion, records whose process no longer exists are marked failed with an interruption explanation. Live or inaccessible processes are left untouched. To recheck a project, run `npm run cli -- recover PROJECT_ID`. Older records without process ownership require stopping all runners first, then `npm run cli -- recover PROJECT_ID --confirm-legacy-stopped`. This retains their evidence and permits normal project deletion; it does not resume execution. A reused process ID is conservatively treated as live until that process exits.
 
 Technical references: [Node SQLite](https://nodejs.org/api/sqlite.html), [Playwright tracing](https://playwright.dev/docs/api/class-tracing), [local trace viewer](https://playwright.dev/docs/trace-viewer).
+
+For the new modules, general AI handoff, exact commands, token rules, bridge setup and editor installation, see [Code, UI, and session workflows](docs/UNDERSTANDING.md).

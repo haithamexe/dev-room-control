@@ -5,7 +5,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import type { Artifact } from '../../core/src/index.ts';
 export const id = () => randomUUID();
 export const now = () => new Date().toISOString();
-export const tables = ['projects', 'environments', 'flows', 'scenarios', 'runs', 'events', 'artifacts', 'findings', 'suppressions', 'notes', 'task_presets', 'repo_snapshots', 'api_fixtures', 'matrices'] as const;
+export const tables = ['projects', 'environments', 'flows', 'scenarios', 'runs', 'events', 'artifacts', 'findings', 'suppressions', 'notes', 'task_presets', 'repo_snapshots', 'api_fixtures', 'matrices', 'reports'] as const;
 export type Table = typeof tables[number];
 export function within(root: string, path: string): string {
   const target = resolve(root, path), rel = relative(resolve(root), target);
@@ -21,7 +21,7 @@ export class Store {
     this.db.exec('BEGIN');
     try {
       for (const table of tables) this.db.exec(`CREATE TABLE IF NOT EXISTS ${table} (id TEXT PRIMARY KEY, project_id TEXT, run_id TEXT, data TEXT NOT NULL); CREATE INDEX IF NOT EXISTS ${table}_project ON ${table}(project_id);`);
-      this.db.exec('INSERT OR IGNORE INTO migrations VALUES (1); INSERT OR IGNORE INTO migrations VALUES (2); COMMIT;');
+      this.db.exec('INSERT OR IGNORE INTO migrations VALUES (1); INSERT OR IGNORE INTO migrations VALUES (2); INSERT OR IGNORE INTO migrations VALUES (3); COMMIT;');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   put<T extends { id: string; projectId?: string; runId?: string }>(table: Table, value: T): T {

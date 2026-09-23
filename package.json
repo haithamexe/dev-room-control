@@ -1,13 +1,50 @@
 {
-  "name": "developer-control-room", "version": "0.1.0", "private": true, "type": "module",
-  "engines": { "node": ">=24.0.0" },
-  "workspaces": ["apps/*", "packages/*", "examples/*"],
-  "scripts": {
-    "dev": "tsx scripts/dev.ts", "build": "tsc --noEmit && vite build", "start": "tsx apps/service/src/server.ts",
-    "desktop": "npm run build && electron apps/desktop/main.cjs", "cli": "tsx apps/cli/src/index.ts",
-    "demo": "tsx examples/demo-app/server.ts", "setup:demo": "tsx apps/cli/src/index.ts demo",
-    "test": "tsx --test tests/*.test.ts", "test:gate": "tsx scripts/verify-gate.ts", "test:phase2": "tsx scripts/verify-phase2.ts", "test:desktop": "tsx scripts/verify-desktop.ts", "typecheck": "tsc --noEmit"
-  },
-  "dependencies": { "react": "19.3.0", "react-dom": "19.3.0", "lucide-react": "1.47.0", "playwright": "1.63.0", "zod": "4.6.5", "fflate": "0.8.3" },
-  "devDependencies": { "@types/node": "26.6.2", "@types/react": "19.3.0", "@types/react-dom": "19.3.0", "@vitejs/plugin-react": "6.1.1", "electron": "44.4.5", "tsx": "4.23.15", "typescript": "7.0.2", "vite": "8.3.0" }
+    "name":  "developer-control-room",
+    "version":  "0.1.0",
+    "private":  true,
+    "type":  "module",
+    "engines":  {
+                    "node":  "\u003e=24.0.0"
+                },
+    "workspaces":  [
+                       "apps/*",
+                       "packages/*",
+                       "examples/*"
+                   ],
+    "scripts":  {
+                    "dev":  "tsx scripts/dev.ts",
+                    "build":  "tsc --noEmit \u0026\u0026 vite build",
+                    "start":  "tsx apps/service/src/server.ts",
+                    "desktop":  "npm run build \u0026\u0026 electron apps/desktop/main.cjs",
+                    "cli":  "tsx apps/cli/src/index.ts",
+                    "demo":  "tsx examples/demo-app/server.ts",
+                    "setup:demo":  "tsx apps/cli/src/index.ts demo",
+                    "test":  "tsx --test tests/*.test.ts",
+                    "test:gate":  "tsx scripts/verify-gate.ts",
+                    "test:phase2":  "tsx scripts/verify-phase2.ts",
+                    "test:desktop":  "tsx scripts/verify-desktop.ts",
+                    "typecheck":  "tsc --noEmit",
+                    "test:phase34":  "tsx scripts/verify-phase34.ts",
+                    "test:editor":  "tsx scripts/verify-editor.ts",
+                    "package:editor":  "tsx scripts/package-editor.ts"
+                },
+    "dependencies":  {
+                         "fflate":  "0.8.3",
+                         "lucide-react":  "1.47.0",
+                         "playwright":  "1.63.0",
+                         "react":  "19.3.0",
+                         "react-dom":  "19.3.0",
+                         "typescript-parser":  "npm:typescript@6.0.3",
+                         "zod":  "4.6.5"
+                     },
+    "devDependencies":  {
+                            "@types/node":  "26.6.2",
+                            "@types/react":  "19.3.0",
+                            "@types/react-dom":  "19.3.0",
+                            "@vitejs/plugin-react":  "6.1.1",
+                            "electron":  "44.4.5",
+                            "tsx":  "4.23.15",
+                            "typescript":  "7.0.2",
+                            "vite":  "8.3.0"
+                        }
 }
