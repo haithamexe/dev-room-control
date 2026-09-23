@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.dcr/
+.devcontrolroom.json
+test-results/
+*.log
