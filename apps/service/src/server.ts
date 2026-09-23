@@ -6,7 +6,8 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { Store, id, now, within } from '../../../packages/storage/src/index.ts';
 import { ControlRoom } from '../../../packages/modules/src/service.ts';
-import { modules, type Project, type Run, type Finding, type RunEvent, type Artifact } from '../../../packages/core/src/index.ts';
+import { modules, configSchema, type Project, type Run, type Finding, type RunEvent, type Artifact } from '../../../packages/core/src/index.ts';
+import type { ApiFixture, Scenario, Matrix } from '../../../packages/core/src/reliability.ts';
 import { redact, redactText } from '../../../packages/core/src/redact.ts';
 import { snapshot, safeSource } from '../../../packages/repo-analysis/src/index.ts';
 const require = createRequire(import.meta.url);
@@ -31,7 +32,7 @@ export function startServer(port = Number(process.env.DCR_PORT || 4310), store =
       if (method === 'GET' && parts[1] === 'session') return send({ token });
       if (!['GET', 'HEAD'].includes(method || '') && req.headers['x-dcr-token'] !== token) return send({ error: 'Reload the dashboard to renew your local session' }, 403);
       if (method === 'GET' && parts[1] === 'overview') {
-        return send({ projects: store.list<Project>('projects').map(p => ({ ...p, git: snapshot(p.path) })), runs: store.list<Run>('runs'), findings: store.list('findings'), flows: store.list('flows'), tasks: store.list('task_presets'), notes: store.list('notes'), modules });
+        return send({ projects: store.list<Project>('projects').map(p => ({ ...p, config: configSchema.parse(p.config), git: snapshot(p.path) })), runs: store.list<Run>('runs'), findings: store.list('findings'), flows: store.list('flows'), tasks: store.list('task_presets'), notes: store.list('notes'), fixtures: store.list('api_fixtures'), scenarios: store.list('scenarios'), matrices: store.list('matrices'), modules });
       }
       if (method === 'POST' && parts[1] === 'demo') return send(await service.seedDemo());
       if (method === 'POST' && parts.length === 2 && parts[1] === 'projects') return send(service.addProject(await body(req)), 201);
@@ -42,10 +43,22 @@ export function startServer(port = Number(process.env.DCR_PORT || 4310), store =
         if (method === 'POST' && parts[3] === 'export') return send(service.exportConfig(projectId));
         if (method === 'POST' && parts[3] === 'flows') return send(service.saveFlow(projectId, await body(req)), 201);
         if (method === 'POST' && parts[3] === 'tasks') return send(service.saveTask(projectId, await body(req)), 201);
+        if (method === 'POST' && parts[3] === 'capture') return send(service.reliability.capture(projectId, await body(req)), 202);
+        if (method === 'POST' && parts[3] === 'fixtures') return send(service.reliability.saveFixture(projectId, await body(req)), 201);
+        if (method === 'POST' && parts[3] === 'scenarios') return send(service.reliability.saveScenario(projectId, await body(req)), 201);
+        if (method === 'POST' && parts[3] === 'matrices') return send(service.reliability.matrix(projectId, await body(req)), 202);
+        if (method === 'POST' && parts[3] === 'setup-labs') return send(service.setupDemoLabs(projectId, await body(req)));
         if (method === 'PUT' && parts[3] === 'notes') { const data = await body(req); return send(store.put('notes', { id: projectId, projectId, text: redactText(String(data.text || '').slice(0, 10000)), nextStep: redactText(String(data.nextStep || '').slice(0, 1000)) })); }
         if (method === 'GET' && parts[3] === 'source') { const p = store.get<Project>('projects', projectId), file = safeSource(p.path, url.searchParams.get('path') || ''); if (statSync(file).size > 256000) throw new Error('Source file too large'); return send({ path: file, content: redactText(readFileSync(file, 'utf8')) }); }
       }
       if (method === 'POST' && parts[1] === 'flows' && parts[3] === 'run') return send(service.run(parts[2]), 202);
+      if (parts[1] === 'fixtures' && parts[2] && method === 'PUT') { const fixture = store.get<ApiFixture>('api_fixtures', parts[2]); return send(service.reliability.saveFixture(fixture.projectId, await body(req), fixture.id)); }
+      if (parts[1] === 'scenarios' && parts[2]) {
+        const scenario = store.get<Scenario>('scenarios', parts[2]);
+        if (method === 'PUT') return send(service.reliability.saveScenario(scenario.projectId, await body(req), scenario.id));
+        if (method === 'POST' && parts[3] === 'run') return send(service.reliability.run(scenario.id), 202);
+      }
+      if (parts[1] === 'matrices' && parts[2] && method === 'GET') return send(store.get<Matrix>('matrices', parts[2]));
       if (parts[1] === 'runs' && parts[2]) {
         const run = store.get<Run>('runs', parts[2]);
         if (method === 'GET') return send({ run, events: store.list<RunEvent>('events', run.projectId).filter(e => e.runId === run.id).reverse(), artifacts: store.list<Artifact>('artifacts', run.projectId).filter(a => a.runId === run.id), findings: store.list<Finding>('findings', run.projectId).filter(f => f.runId === run.id), replayCommand: `npm run cli -- replay ${run.id}` });

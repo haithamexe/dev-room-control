@@ -34,7 +34,7 @@ test('migrations are repeatable, evidence persists, and project deletion cleans 
   try {
     let store = new Store(root); store.put('projects', { id: 'project-1' }); store.put('notes', { id: 'note-1', projectId: 'project-1', text: 'Resume exactly here' });
     const artifact = store.artifact('project-1', 'run-1', 'timeline.json', 'application/json', Buffer.from('{}')); store.close();
-    store = new Store(root); assert.equal(store.list<any>('notes')[0].text, 'Resume exactly here'); assert.equal(store.readArtifact(artifact).toString(), '{}'); assert.equal(store.db.prepare('SELECT count(*) AS n FROM migrations').get()!.n, 1);
+    store = new Store(root); assert.equal(store.list<any>('notes')[0].text, 'Resume exactly here'); assert.equal(store.readArtifact(artifact).toString(), '{}'); assert.equal(store.db.prepare('SELECT count(*) AS n FROM migrations').get()!.n, 2);
     store.deleteProject('project-1'); assert.equal(store.list('notes').length, 0); assert.ok(!existsSync(join(root, 'project-1'))); store.close();
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

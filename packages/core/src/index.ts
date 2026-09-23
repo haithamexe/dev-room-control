@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { reliabilityConfigSchema, type ScenarioDefinition, type ScenarioResult } from './reliability.ts';
 export const modules = [
   { id: 'time-machine', name: 'Bug Time Machine', description: 'Record, inspect, and replay browser flows.', phase: 1 },
   { id: 'tasks', name: 'Workspace Launcher', description: 'Your files, URLs, and commands in one place.', phase: 1 },
@@ -19,7 +20,8 @@ export const stepSchema = z.discriminatedUnion('action', [
 export const flowSchema = z.object({ name: z.string().min(1).max(120), description: z.string().max(500).default(''), steps: z.array(stepSchema).min(1).max(100) });
 export const configSchema = z.object({
   environment: z.enum(['local', 'test', 'staging']).default('local'), allowedOrigins: z.array(z.url()).default([]),
-  modules: z.array(z.enum(['time-machine', 'tasks'])).default(['time-machine', 'tasks']),
+  modules: z.array(z.enum(['time-machine', 'tasks', 'api', 'payments'])).default(['time-machine', 'tasks']),
+  reliability: reliabilityConfigSchema.default(() => reliabilityConfigSchema.parse({})),
   captureBodies: z.boolean().default(false), ignoreUrls: z.array(z.string()).default([]),
   redactFields: z.array(z.string()).default([]), maskSelectors: z.array(z.string()).default([]),
   commands: z.record(z.string(), z.string()).default({}), retentionDays: z.number().int().min(1).max(3650).default(30),
@@ -28,7 +30,7 @@ export type Config = z.infer<typeof configSchema>;
 export type FlowDefinition = z.infer<typeof flowSchema>;
 export type Flow = FlowDefinition & { id: string; projectId: string; createdAt: string };
 export type Project = { id: string; name: string; path: string; baseUrl: string; config: Config; detection: { framework: string; packageManager: string; gitRoot: string | null }; createdAt: string };
-export type Run = { id: string; projectId: string; flowId: string; name: string; status: 'running' | 'passed' | 'failed'; startedAt: string; endedAt?: string; error?: string; baseUrl: string; flow: FlowDefinition; scenario: { name: string; version: number }; git: { branch: string; commit: string; dirty: boolean }; browserVersion?: string; replayOf?: string };
+export type Run = { id: string; projectId: string; flowId: string; name: string; status: 'running' | 'passed' | 'failed'; startedAt: string; endedAt?: string; error?: string; baseUrl: string; flow: FlowDefinition; scenario: ScenarioDefinition; result?: ScenarioResult; git: { branch: string; commit: string; dirty: boolean }; browserVersion?: string; replayOf?: string };
 export type RunEvent = { id: string; runId: string; at: string; kind: 'action' | 'navigation' | 'console' | 'request' | 'assertion' | 'error' | 'marker'; title: string; data: Record<string, unknown> };
 export type Artifact = { id: string; runId: string; projectId: string; path: string; mediaType: string; name: string; hash: string; redacted: boolean };
 export type Finding = { id: string; runId: string; projectId: string; title: string; expected: string; observed: string; status: 'open' | 'resolved' | 'suppressed'; createdAt: string };

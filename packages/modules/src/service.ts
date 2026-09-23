@@ -8,11 +8,15 @@ import { assertTarget, redact, redactText } from '../../core/src/redact.ts';
 import { Store, now, id, within } from '../../storage/src/index.ts';
 import { detect, snapshot, safeSource } from '../../repo-analysis/src/index.ts';
 import { createRun, executeRun } from '../../runner/src/index.ts';
+import { ReliabilityCommands } from './reliability.ts';
+import { assertScenario } from '../../core/src/reliability-policy.ts';
+import { paymentCases, type ScenarioDefinition, type Scenario, type ApiFixture } from '../../core/src/reliability.ts';
 
 export class ControlRoom extends EventEmitter {
   active = new Map<string, Promise<Run>>();
   processes = new Set<ReturnType<typeof spawn>>();
-  constructor(public store: Store) { super(); }
+  reliability: ReliabilityCommands;
+  constructor(public store: Store) { super(); this.reliability = new ReliabilityCommands(store, (flow, scenario) => this.startRun(flow, scenario), this.active); }
   addProject(input: unknown) {
     const data = z.object({ name: z.string().min(1).max(100), path: z.string().min(1), baseUrl: z.url(), config: configSchema.optional() }).parse(input);
     const path = realpathSync(data.path); if (!statSync(path).isDirectory()) throw new Error('Choose a repository directory');
@@ -41,12 +45,16 @@ export class ControlRoom extends EventEmitter {
     return this.store.put('flows', { ...definition, id: id(), projectId, createdAt: now() });
   }
   run(flowId: string, replayId?: string) {
-    const flow = this.store.get<Flow>('flows', flowId), project = this.store.get<Project>('projects', flow.projectId);
-    if (!project.config.modules.includes('time-machine')) throw new Error('Enable Bug Time Machine in project settings');
-    if (this.active.size >= 2) throw new Error('Two runs are already active; wait for one to finish');
+    const flow = this.store.get<Flow>('flows', flowId);
     const replay = replayId ? this.store.get<Run>('runs', replayId) : undefined;
-    if (replay && replay.projectId !== project.id) throw new Error('Replay project mismatch');
-    const run = createRun(this.store, project, flow, replay);
+    if (replay && replay.projectId !== flow.projectId) throw new Error('Replay project mismatch');
+    return this.startRun(flow, replay?.scenario || { kind: 'baseline', name: 'Baseline', version: 1 }, replay);
+  }
+  private startRun(flow: Flow, scenario: ScenarioDefinition, replay?: Run) {
+    const project = this.reliability.project(flow.projectId);
+    if (this.active.size >= 2) throw new Error('Two runs are already active; wait for one to finish');
+    assertScenario(project, scenario);
+    const run = createRun(this.store, project, flow, replay, scenario.kind === 'baseline' ? undefined : scenario);
     const promise = executeRun(this.store, project, run).then(result => { this.emit('run.completed', result); return result; }).finally(() => this.active.delete(run.id));
     this.active.set(run.id, promise); void promise.catch(() => {}); return run;
   }
@@ -84,7 +92,8 @@ export class ControlRoom extends EventEmitter {
   deleteProject(projectId: string, confirmation: string) {
     const project = this.store.get<Project>('projects', projectId);
     if (confirmation !== project.name) throw new Error('Type the project name to confirm deletion');
-    if (this.store.list<Run>('runs', projectId).some(r => this.active.has(r.id))) throw new Error('Wait for active runs to finish before deleting');
+    if (this.store.list<Run>('runs', projectId).some(r => r.status === 'running')) throw new Error('Wait for active runs to finish before deleting');
+    if (this.store.list<{id: string; status: string}>('matrices', projectId).some(m => m.status === 'running')) throw new Error('Wait for active matrices to finish before deleting');
     this.store.deleteProject(projectId); return { deleted: true };
   }
   async seedDemo() {
@@ -97,5 +106,29 @@ export class ControlRoom extends EventEmitter {
     this.saveTask(project.id, { name: 'Fix checkout confirmation', files: ['server.ts'], urls: [project.baseUrl], command: 'dev', flowId: flow.id, branch: 'fix/checkout', notes: 'Inspect the confirmation request and rerun Complete checkout. The demo supports DEMO_FIXED=1 to validate the correction.' });
     this.store.put('notes', { id: project.id, projectId: project.id, text: 'The confirmation endpoint returns 500. Start with the failed request in the latest checkout run.', nextStep: 'Inspect POST /api/confirm and the missing success state.' });
     return project;
+  }
+  setupDemoLabs(projectId: string, input: unknown) {
+    const { confirmFixtures } = z.object({ confirmFixtures: z.literal(true, { error: 'Explicitly confirm the included local fixture environment' }) }).parse(input);
+    let project = this.reliability.project(projectId);
+    if (project.path !== realpathSync(resolve('examples/demo-app')) || project.config.environment !== 'local') throw new Error('Automatic lab setup is only available for the included local demo repository');
+    project = this.saveConfig(projectId, { ...project.config, modules: [...new Set([...project.config.modules, 'api', 'payments'])], reliability: { apiPaths: [...new Set([...project.config.reliability.apiPaths, '/api/products'])], payment: { testEnvironmentConfirmed: confirmFixtures, fixturesOnlyConfirmed: confirmFixtures } } });
+    const findFlow = (name: string, steps: Flow['steps']) => this.store.list<Flow>('flows', projectId).find(flow => flow.name === name) || this.saveFlow(projectId, { name, steps });
+    const capture = findFlow('Catalog fixture capture', [{ action: 'goto', url: '/catalog' }, { action: 'assertText', text: 'Catalog ready' }]);
+    const api = findFlow('Catalog response resilience', [{ action: 'goto', url: '/catalog' }, { action: 'assertText', text: 'The catalog' }]);
+    const checkout = findFlow('Fixture checkout', [{ action: 'goto', url: '/lab/checkout/{orderId}' }, { action: 'click', role: 'button', name: 'Confirm fixture order' }, { action: 'assertText', text: 'Order confirmed' }]);
+    const fixture = this.store.list<ApiFixture>('api_fixtures', projectId).find(f => f.name === 'Demo products') || this.reliability.saveFixture(projectId, { name: 'Demo products', url: new URL('/api/products', project.baseUrl).href, json: { items: [{ id: 'tote', name: 'Everyday canvas tote', subtitle: 'Natural cotton' }] } });
+    const existing = this.store.list<Scenario>('scenarios', projectId);
+    const cases: [string, string, string, string][] = [
+      ['Empty product list', 'empty-list', '/items', 'No products yet'],
+      ['Missing optional subtitle', 'missing-field', '/items/0/subtitle', 'No description available'],
+      ['Nullable subtitle', 'null-field', '/items/0/subtitle', 'No description available'],
+      ['Oversized product name', 'oversized-string', '/items/0/name', 'Product name is too long'],
+      ['Expired session', 'unauthorized', '', 'Please sign in again'],
+      ['Server failure', 'server-error', '', 'We could not load products'],
+      ['Delayed products', 'delay', '', 'Catalog ready'],
+    ];
+    for (const [name, kind, pointer, expectedText] of cases) if (!existing.some(s => s.definition.name === name)) this.reliability.saveScenario(projectId, { kind: 'api', name, flowId: api.id, fixtureId: fixture.id, mutation: { kind, pointer }, expectedText });
+    for (const paymentCase of paymentCases) if (!existing.some(s => s.definition.kind === 'payment' && s.definition.paymentCase === paymentCase)) this.reliability.saveScenario(projectId, { kind: 'payment', name: paymentCase.replaceAll('-', ' '), paymentCase, flowId: checkout.id });
+    return { project, captureFlowId: capture.id, fixture, scenarios: this.store.list<Scenario>('scenarios', projectId) };
   }
 }
