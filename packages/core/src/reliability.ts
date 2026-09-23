@@ -31,7 +31,7 @@ export type ScenarioDefinition =
   | { kind: 'api'; name: string; version: number; fixture: FixtureSnapshot; mutation: Mutation; expectedText: string }
   | { kind: 'payment'; name: string; version: number; paymentCase: typeof paymentCases[number]; adapter: PaymentAdapter };
 export type Scenario = { id: string; projectId: string; flowId: string; definition: ScenarioDefinition; createdAt: string; fixtureId?: string };
-export type Matrix = { id: string; projectId: string; name: string; status: 'running' | 'completed' | 'failed'; runIds: string[]; scenarioIds: string[]; createdAt: string; endedAt?: string; error?: string };
+export type Matrix = { id: string; ownerPid?: number; projectId: string; name: string; status: 'running' | 'completed' | 'failed'; runIds: string[]; scenarioIds: string[]; createdAt: string; endedAt?: string; error?: string };
 export type ScenarioResult = { expected: unknown; observed: unknown; matchedRequests?: number; fixtureId?: string; orderId?: string; passed: boolean };
 
 // Exact JSON Pointer traversal; only existing own properties may be changed.

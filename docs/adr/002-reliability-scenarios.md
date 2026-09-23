@@ -8,7 +8,7 @@ Extend the existing modular monolith with API and payment scenario definitions, 
 
 `ReliabilityCommands` validates project ownership and policies, creates versioned scenario definitions, and freezes execution plans for matrices. Each execution snapshots its flow and scenario into a normal run. API snapshots embed the sanitized response body, URL/method/status, mutation inputs and expected text. Payment snapshots embed the selected case and approved fixture adapter. Replay rechecks current permissions before using these saved inputs.
 
-Browser routing recognizes exact GET fetch/XHR URLs. Capture persists one selected successful JSON response after redaction. Mutation fulfills with a deterministic synthetic JSON/status/delay response. A match counter prevents false passing when a fixture URL is never requested. JSON Pointer traversal only touches existing own properties; prototype-related segments are rejected.
+Browser routing recognizes exact GET fetch/XHR URLs. Capture persists one selected successful JSON response after redaction. Mutation fulfills with a deterministic synthetic JSON/status/delay response. A match counts only after the browser finishes receiving the response; outcome evaluation waits for that delivery and browser event processing. Uncaught errors observed before teardown also fail the scenario. JSON Pointer traversal only touches existing own properties; prototype-related segments are rejected.
 
 Payment scenarios share Playwright actions and artifacts but query the fixture server directly for authoritative state. Browser text and route are observations, never payment truth. The amount/currency are constant fixture inputs; each run uses a fresh order ID to isolate state. No payment credentials or real gateway SDKs are introduced.
 
@@ -35,3 +35,6 @@ The adapter is intended for deliberately designated local/test/staging fixtures.
 - Matrices run sequential cases with the service's existing two-run cap. They survive as completed records, but scheduling is not restart-resumable.
 - The UI marks imported fixtures separately from real browser captures. Both become immutable run inputs, but imported data is not presented as observed server evidence.
 - Custom redaction fields apply to payloads; they do not rewrite executable scenario metadata such as URL, kind, or adapter paths.
+- New scenarios, runs, replays, and exported scenario payloads apply current redaction rules. Historical source records remain immutable.
+- Runs retain case ID and definition version, so duplicate names and edited cases cannot inherit another case's result.
+- Running records retain process ownership. Dead owners are recovered as failed at startup or deletion; legacy records require explicit stopped-runner confirmation through the CLI. Process IDs can be reused, so an existing PID is conservatively treated as active.

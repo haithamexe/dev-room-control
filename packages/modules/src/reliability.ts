@@ -7,7 +7,7 @@ import { redact, redactText } from '../../core/src/redact.ts';
 
 export class ReliabilityCommands {
   activeMatrices = new Map<string, Promise<Matrix>>();
-  constructor(private store: Store, private start: (flow: Flow, scenario: ScenarioDefinition) => Run, private active: Map<string, Promise<Run>>) {}
+  constructor(private store: Store, private start: (flow: Flow, scenario: ScenarioDefinition, scenarioId?: string) => Run, private active: Map<string, Promise<Run>>) {}
   project(projectId: string) { const project = this.store.get<Project>('projects', projectId); return { ...project, config: configSchema.parse(project.config) }; }
   capture(projectId: string, input: unknown) {
     const data = z.object({ name: z.string().min(1).max(120), flowId: z.string().uuid(), url: z.url() }).parse(input);
@@ -37,6 +37,7 @@ export class ReliabilityCommands {
       if (fixture.projectId !== projectId) throw new Error('Fixture must belong to this project');
       assertApiTarget(project, fixture.url); mutateFixture(fixture, parsed.mutation);
       const snapshot = fixtureInputSchema.parse(fixture);
+      snapshot.json = redact(snapshot.json, project.config.redactFields);
       if (redactText(parsed.expectedText) !== parsed.expectedText) throw new Error('Use non-sensitive UI text for the expected outcome');
       definition = { kind: 'api', name: redactText(parsed.name), version, fixture: snapshot, mutation: parsed.mutation, expectedText: parsed.expectedText };
     } else definition = { kind: 'payment', name: redactText(parsed.name), version, paymentCase: parsed.paymentCase, adapter: assertPayment(project) };
@@ -49,19 +50,19 @@ export class ReliabilityCommands {
     assertScenario(this.project(scenario.projectId), scenario.definition);
     return { scenario, flow };
   }
-  run(scenarioId: string) { const { scenario, flow } = this.plan(scenarioId); return this.start(flow, scenario.definition); }
+  run(scenarioId: string) { const { scenario, flow } = this.plan(scenarioId); return this.start(flow, scenario.definition, scenario.id); }
   matrix(projectId: string, input: unknown) {
     const data = z.object({ name: z.string().min(1).max(120).default('Scenario matrix'), scenarioIds: z.array(z.string().uuid()).min(1).max(20) }).parse(input);
     if (new Set(data.scenarioIds).size !== data.scenarioIds.length) throw new Error('Select each scenario only once');
     const plans = data.scenarioIds.map(scenarioId => this.plan(scenarioId));
     if (plans.some(plan => plan.scenario.projectId !== projectId)) throw new Error('Matrix scenarios must belong to one project');
     if (this.activeMatrices.size >= 2) throw new Error('Two matrices are already active');
-    const matrix: Matrix = this.store.put('matrices', { id: id(), projectId, name: data.name, status: 'running', runIds: [], scenarioIds: data.scenarioIds, createdAt: now() });
+    const matrix: Matrix = this.store.put('matrices', { id: id(), projectId, name: data.name, status: 'running', ownerPid: process.pid, runIds: [], scenarioIds: data.scenarioIds, createdAt: now() });
     const job = (async () => {
       try {
         for (const plan of plans) {
           while (this.active.size >= 2) await Promise.race([...this.active.values()]).catch(() => {});
-          const run = this.start(plan.flow, plan.scenario.definition); matrix.runIds.push(run.id); this.store.put('matrices', matrix);
+          const run = this.start(plan.flow, plan.scenario.definition, plan.scenario.id); matrix.runIds.push(run.id); this.store.put('matrices', matrix);
           await this.active.get(run.id);
         }
         matrix.status = 'completed';

@@ -16,7 +16,7 @@ export class ControlRoom extends EventEmitter {
   active = new Map<string, Promise<Run>>();
   processes = new Set<ReturnType<typeof spawn>>();
   reliability: ReliabilityCommands;
-  constructor(public store: Store) { super(); this.reliability = new ReliabilityCommands(store, (flow, scenario) => this.startRun(flow, scenario), this.active); }
+  constructor(public store: Store) { super(); this.reliability = new ReliabilityCommands(store, (flow, scenario, scenarioId) => this.startRun(flow, scenario, undefined, scenarioId), this.active); this.recoverInterrupted(); }
   addProject(input: unknown) {
     const data = z.object({ name: z.string().min(1).max(100), path: z.string().min(1), baseUrl: z.url(), config: configSchema.optional() }).parse(input);
     const path = realpathSync(data.path); if (!statSync(path).isDirectory()) throw new Error('Choose a repository directory');
@@ -50,11 +50,11 @@ export class ControlRoom extends EventEmitter {
     if (replay && replay.projectId !== flow.projectId) throw new Error('Replay project mismatch');
     return this.startRun(flow, replay?.scenario || { kind: 'baseline', name: 'Baseline', version: 1 }, replay);
   }
-  private startRun(flow: Flow, scenario: ScenarioDefinition, replay?: Run) {
+  private startRun(flow: Flow, scenario: ScenarioDefinition, replay?: Run, scenarioId?: string) {
     const project = this.reliability.project(flow.projectId);
     if (this.active.size >= 2) throw new Error('Two runs are already active; wait for one to finish');
     assertScenario(project, scenario);
-    const run = createRun(this.store, project, flow, replay, scenario.kind === 'baseline' ? undefined : scenario);
+    const run = createRun(this.store, project, flow, replay, scenario.kind === 'baseline' ? undefined : scenario, scenarioId);
     const promise = executeRun(this.store, project, run).then(result => { this.emit('run.completed', result); return result; }).finally(() => this.active.delete(run.id));
     this.active.set(run.id, promise); void promise.catch(() => {}); return run;
   }
@@ -89,9 +89,24 @@ export class ControlRoom extends EventEmitter {
     }
     return { ...preview, editorUrls, launched: true };
   }
+  recoverInterrupted(projectId?: string, confirmLegacyStopped = false) {
+    let recovered = 0;
+    for (const table of ['runs', 'matrices'] as const) {
+      for (const record of this.store.list<{ id: string; status: string; ownerPid?: number; endedAt?: string; error?: string }>(table, projectId)) {
+        if (record.status !== 'running') continue;
+        if (record.ownerPid) {
+          try { process.kill(record.ownerPid, 0); continue; } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') continue; }
+        } else if (!confirmLegacyStopped) continue;
+        record.status = 'failed'; record.endedAt = now(); record.error = 'Execution interrupted: its runner stopped before completion.';
+        this.store.put(table, record); recovered++;
+      }
+    }
+    return { recovered };
+  }
   deleteProject(projectId: string, confirmation: string) {
     const project = this.store.get<Project>('projects', projectId);
     if (confirmation !== project.name) throw new Error('Type the project name to confirm deletion');
+    this.recoverInterrupted(projectId);
     if (this.store.list<Run>('runs', projectId).some(r => r.status === 'running')) throw new Error('Wait for active runs to finish before deleting');
     if (this.store.list<{id: string; status: string}>('matrices', projectId).some(m => m.status === 'running')) throw new Error('Wait for active matrices to finish before deleting');
     this.store.deleteProject(projectId); return { deleted: true };

@@ -97,7 +97,7 @@ Supported deterministic mutations: remove an optional field, set a field to null
 
 Enable the `api` module and configure **exact** `reliability.apiPaths` first. Auth/payment-related endpoints are denied. Mutation intercepts only the configured URL and GET fetch/XHR requests; other requests retain the normal project target policy. There is no wildcard route matching, POST/body matching, query-string fixture support, or randomized mutation. A fresh browser context is used for each case.
 
-Editing a fixture does not change existing scenario snapshots. Edit/save the case to adopt the latest fixture. Editing a case increments its version; existing runs still replay their original fixture, mutation, flow, and expected outcome. Matrices freeze their case definitions and flows when started, then run cases in order. `completed` means all cases finished, not that all passed; the UI reports pass/fail counts separately.
+Editing a fixture does not change existing scenario snapshots. Edit/save the case to adopt the latest fixture. Editing a case increments its version; existing runs still replay their original fixture, mutation, flow, and expected outcome, subject to current payload redaction rules. New runs, replays, and scenario exports apply the current rules without changing old records. Cards show results for the exact case ID and version. Matrices freeze their case definitions and flows when started, then run cases in order. `completed` means all cases finished, not that all passed; the UI reports pass/fail counts separately.
 
 ### Payment Flow Stress Lab
 
@@ -175,7 +175,7 @@ npm run test:gate
 npm run test:phase2
 ```
 
-The focused tests cover migrations, persistence/deletion, redaction, trace sanitization, target/redirect restrictions, dirty-worktree/path handling, deterministic mutation semantics, JSON Pointer confinement, and payment approval. The Phase 1 gate starts a fixture server on **4411** and dashboard on **4311**, then checks:
+The 16 focused tests cover migrations, persistence/deletion and interrupted-work recovery, redaction, trace sanitization, target/redirect restrictions, dirty-worktree/path handling, deterministic mutation semantics, completed mutation delivery, scenario identity/version display, JSON Pointer confinement, and payment approval/ignore rules. The Phase 1 gate starts a fixture server on **4411** and dashboard on **4311**, then checks:
 
 1. A real failure has its preceding action, HTTP 500, console error, screenshot, trace and timeline.
 2. Replay reproduces the failure even after changing the current flow definition.
@@ -198,5 +198,7 @@ Stop the faulty demo before starting the corrected one. In bash: `DEMO_FIXED=1 n
 ## Architecture and remaining work
 
 See [ADR 001](docs/adr/001-local-modular-monolith.md), [ADR 002](docs/adr/002-reliability-scenarios.md), and [roadmap](docs/ROADMAP.md). This is a source-distributed application, not an installer release. Supported now: Chromium, JSON flows, local SQLite, local trace viewer, Electron shell, CLI, seven API mutations, and three fixture-only payment scenarios. Not implemented: interactive click recording, arbitrary Playwright script import, automatic source/component mapping, additional browsers, real payment gateway adapters, visual drift analysis, PR risk maps, full Context Resurrection, or the optional VS Code extension. Run/matrix scheduling is in-process; active work is not automatically resumed after a forced shutdown.
+
+Runs and matrices record their owning process. At startup and before project deletion, records whose process no longer exists are marked failed with an interruption explanation. Live or inaccessible processes are left untouched. To recheck a project, run `npm run cli -- recover PROJECT_ID`. Older records without process ownership require stopping all runners first, then `npm run cli -- recover PROJECT_ID --confirm-legacy-stopped`. This retains their evidence and permits normal project deletion; it does not resume execution. A reused process ID is conservatively treated as live until that process exits.
 
 Technical references: [Node SQLite](https://nodejs.org/api/sqlite.html), [Playwright tracing](https://playwright.dev/docs/api/class-tracing), [local trace viewer](https://playwright.dev/docs/trace-viewer).

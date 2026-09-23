@@ -29,7 +29,11 @@ try {
   else if (command === 'task-preview') result = service.previewTask(args[0]);
   else if (command === 'task-launch') result = service.launchTask(args[0], args.includes('--approve-command'));
   else if (command === 'delete-project') result = service.deleteProject(args[0], args[1]);
-  else { console.log('Developer Control Room\n\n  demo\n  projects\n  add <repo> <name> [url]\n  import-project <repo> <config.json>\n  flows [project-id]\n  import <project-id> <flow.json>\n  run <flow-id>\n  replay <run-id>\n  runs [project-id]\n  inspect <run-id>\n  setup-labs <project-id> --confirm-fixtures\n  fixtures [project-id]\n  capture <project-id> <flow-id> <url> [name]\n  save-fixture <project-id> <fixture.json> [fixture-id]\n  save-scenario <project-id> <scenario.json> [scenario-id]\n  scenarios [project-id]\n  scenario <scenario-id>\n  matrix <project-id> <scenario-id>...\n  task-preview <task-id>\n  task-launch <task-id> --approve-command\n  delete-project <project-id> "exact project name"'); }
+  else if (command === 'recover') {
+    if (!args[0]) throw new Error('Provide a project ID');
+    result = service.recoverInterrupted(args[0], args.includes('--confirm-legacy-stopped'));
+  }
+  else { console.log('Developer Control Room\n\n  demo\n  projects\n  add <repo> <name> [url]\n  import-project <repo> <config.json>\n  flows [project-id]\n  import <project-id> <flow.json>\n  run <flow-id>\n  replay <run-id>\n  runs [project-id]\n  inspect <run-id>\n  setup-labs <project-id> --confirm-fixtures\n  fixtures [project-id]\n  capture <project-id> <flow-id> <url> [name]\n  save-fixture <project-id> <fixture.json> [fixture-id]\n  save-scenario <project-id> <scenario.json> [scenario-id]\n  scenarios [project-id]\n  scenario <scenario-id>\n  matrix <project-id> <scenario-id>...\n  task-preview <task-id>\n  task-launch <task-id> --approve-command\n  recover <project-id> [--confirm-legacy-stopped]\n  delete-project <project-id> "exact project name"'); }
   if (result) console.log(JSON.stringify(result, null, 2));
 } catch (error) { console.error(error instanceof Error ? error.message : error); process.exitCode = 1; }
 finally { store.close(); }

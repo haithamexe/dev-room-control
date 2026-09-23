@@ -30,9 +30,11 @@ export function sanitizeTrace(bytes: Uint8Array, fields: string[], inputs: strin
   }
   return zipSync(output);
 }
-export function createRun(store: Store, project: Project, flow: Flow, replay?: Run, scenario?: ScenarioDefinition): Run {
+export function createRun(store: Store, project: Project, flow: Flow, replay?: Run, scenario?: ScenarioDefinition, scenarioId?: string): Run {
   assertTarget(replay?.baseUrl || project.baseUrl, project.baseUrl, project.config);
-  return store.put('runs', { id: id(), projectId: project.id, flowId: flow.id, name: replay?.name || (scenario ? `${flow.name} · ${scenario.name}` : flow.name), status: 'running', startedAt: now(), baseUrl: replay?.baseUrl || project.baseUrl, flow: replay?.flow || { name: flow.name, description: flow.description, steps: flow.steps }, scenario: structuredClone(replay?.scenario || scenario || { kind: 'baseline', name: 'Baseline', version: 1 }), git: snapshot(project.path), replayOf: replay?.id });
+  const definition: ScenarioDefinition = structuredClone(replay?.scenario || scenario || { kind: 'baseline', name: 'Baseline', version: 1 });
+  if (definition.kind === 'api') definition.fixture.json = redact(definition.fixture.json, project.config.redactFields);
+  return store.put('runs', { id: id(), projectId: project.id, flowId: flow.id, name: replay?.name || (scenario ? `${flow.name} · ${scenario.name}` : flow.name), status: 'running', ownerPid: process.pid, startedAt: now(), baseUrl: replay?.baseUrl || project.baseUrl, flow: replay?.flow || { name: flow.name, description: flow.description, steps: flow.steps }, scenario: definition, scenarioId: replay?.scenarioId || scenarioId, git: snapshot(project.path), replayOf: replay?.id });
 }
 export async function executeRun(store: Store, project: Project, run: Run) {
   let browser: Browser | undefined, context: BrowserContext | undefined;
@@ -45,6 +47,14 @@ export async function executeRun(store: Store, project: Project, run: Run) {
   const pageErrors: string[] = [];
   let signalCapture: (() => void) | undefined;
   const captureReady = new Promise<void>(resolve => { signalCapture = resolve; });
+  let signalMutation: (() => void) | undefined;
+  const mutationReady = new Promise<void>(resolve => { signalMutation = resolve; });
+  const fail = (error: unknown) => {
+    run.status = 'failed'; run.error = redactText(scrubInputs(error instanceof Error ? error.message : String(error), inputs));
+    event('error', `Failed at ${activeStep}`, { error: run.error });
+    const finding = store.put('findings', { id: id(), projectId: project.id, runId: run.id, title: `${run.name} did not complete`, expected: activeStep, observed: run.error, status: 'open', createdAt: now() });
+    event('assertion', 'Flow failed', { findingId: finding.id, expected: activeStep, observed: run.error, passed: false });
+  };
   try {
     assertScenario(project, run.scenario);
     browser = await chromium.launch({ headless: true }); run.browserVersion = browser.version();
@@ -58,7 +68,7 @@ export async function executeRun(store: Store, project: Project, run: Run) {
         const isApiRequest = ['fetch', 'xhr'].includes(resource) && route.request().method() === 'GET';
         if (run.scenario.kind === 'api' && isApiRequest && url === run.scenario.fixture.url) {
           assertApiTarget(project, url);
-          const response = mutateFixture(run.scenario.fixture, run.scenario.mutation); matchedRequests++;
+          const response = mutateFixture(run.scenario.fixture, run.scenario.mutation);
           event('request', 'Applied API mutation', { url, mutation: run.scenario.mutation, status: response.status, response: response.json, delayMs: response.delayMs });
           if (response.delayMs) await new Promise(resolve => setTimeout(resolve, response.delayMs));
           await route.fulfill({ status: response.status, contentType: 'application/json', body: JSON.stringify(response.json) }); return;
@@ -92,12 +102,15 @@ export async function executeRun(store: Store, project: Project, run: Run) {
       const job = (async () => {
         const request = response.request();
         if (!['fetch', 'xhr', 'document'].includes(request.resourceType())) return;
-        await response.finished();
+        if (await response.finished()) return;
         const data: Record<string, unknown> = { url: response.url(), method: request.method(), status: response.status(), duration: Math.max(0, Math.round(request.timing().responseEnd)) };
         if (project.config.captureBodies && response.headers()['content-type']?.includes('application/json')) {
           try { const body = await response.body(); if (body.length < 64000) data.body = JSON.parse(body.toString()); } catch { /* response may be interrupted */ }
         }
         event('request', `${request.method()} ${new URL(response.url()).pathname}`, data);
+        if (run.scenario.kind === 'api' && request.method() === 'GET' && ['fetch', 'xhr'].includes(request.resourceType()) && response.url() === run.scenario.fixture.url) {
+          matchedRequests++; signalMutation?.();
+        }
       })().catch(() => {});
       pending.add(job); void job.finally(() => pending.delete(job));
     });
@@ -118,6 +131,11 @@ export async function executeRun(store: Store, project: Project, run: Run) {
     }
     if (run.scenario.kind === 'api') {
       activeStep = `Mutation outcome: ${run.scenario.expectedText}`;
+      // A route match is only an attempt: wait until the browser received the body.
+      let timer: ReturnType<typeof setTimeout>;
+      try { await Promise.race([mutationReady, new Promise<void>(resolve => { timer = setTimeout(resolve, 7000); })]); } finally { clearTimeout(timer!); }
+      // Yield through the browser event loop so fetch handlers can update UI or throw.
+      await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
       let visible = false; try { await page.getByText(run.scenario.expectedText, { exact: true }).waitFor({ state: 'visible', timeout: 3000 }); visible = true; } catch { /* include observed state below */ }
       const observed = { expectedTextVisible: visible, pageErrors, route: page.url(), bodyText: (await page.locator('body').innerText()).slice(0, 2000) };
       const passed = matchedRequests > 0 && visible && pageErrors.length === 0;
@@ -132,10 +150,7 @@ export async function executeRun(store: Store, project: Project, run: Run) {
     }
     run.status = 'passed';
   } catch (error) {
-    run.status = 'failed'; run.error = redactText(scrubInputs(error instanceof Error ? error.message : String(error), inputs));
-    event('error', `Failed at ${activeStep}`, { error: run.error });
-    const finding = store.put('findings', { id: id(), projectId: project.id, runId: run.id, title: `${run.name} did not complete`, expected: activeStep, observed: run.error, status: 'open', createdAt: now() });
-    event('assertion', 'Flow failed', { findingId: finding.id, expected: activeStep, observed: run.error, passed: false });
+    fail(error);
   } finally {
     if (context) {
       try {
@@ -151,8 +166,13 @@ export async function executeRun(store: Store, project: Project, run: Run) {
     }
     await Promise.allSettled([...pending]);
     await browser?.close().catch(() => {}); rmSync(temp, { recursive: true, force: true });
+    if (run.status === 'passed' && ['api', 'payment'].includes(run.scenario.kind || '') && pageErrors.length) {
+      if (run.result) run.result = { ...run.result, passed: false, observed: { ...(run.result.observed as Record<string, unknown>), pageErrors } };
+      fail(new Error('Scenario raised an uncaught browser error'));
+    }
     run.endedAt = now();
     if (run.result) run.result = redact(scrubInputs(run.result, inputs), project.config.redactFields);
+    if (run.scenario.kind === 'api') run.scenario.fixture.json = redact(scrubInputs(run.scenario.fixture.json, inputs), project.config.redactFields);
     store.put('runs', run);
     if (run.scenario.kind && run.scenario.kind !== 'baseline') store.artifact(project.id, run.id, 'scenario.json', 'application/json', Buffer.from(JSON.stringify({ scenario: run.scenario, result: run.result, error: run.error }, null, 2)));
     store.artifact(project.id, run.id, 'timeline.json', 'application/json', Buffer.from(JSON.stringify(store.list<RunEvent>('events', project.id).filter(e => e.runId === run.id).reverse(), null, 2)));

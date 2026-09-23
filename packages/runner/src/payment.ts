@@ -7,6 +7,7 @@ type Emit = (kind: RunEvent['kind'], title: string, data?: Record<string, unknow
 export async function paymentRequest(context: BrowserContext, project: Project, path: string, method: 'GET' | 'POST', data?: unknown) {
   const url = assertTarget(path, project.baseUrl, project.config);
   if (!url.pathname.startsWith('/__fixtures/')) throw new Error('Only the fixture HTTP protocol is supported');
+  if (project.config.ignoreUrls.some(pattern => url.href.includes(pattern))) throw new Error('Fixture request matches an ignored URL');
   const response = await context.request.fetch(url.href, { method, data, maxRedirects: 0, timeout: 10000 });
   if (response.status() < 200 || response.status() >= 300 || response.headers()['x-dcr-fixture'] !== '1') throw new Error(`Fixture adapter rejected ${method} ${url.pathname} (HTTP ${response.status()}). Required header: X-DCR-Fixture: 1`);
   const bytes = await response.body(); if (bytes.length > 64000) throw new Error('Fixture adapter response exceeds 64 KB');

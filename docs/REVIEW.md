@@ -25,3 +25,21 @@ Review totals: Standards 3 findings including follow-up, all addressed; Spec 2 f
 ## Desktop investigation
 
 The initial native test launched Electron from the restricted agent tool environment and reproduced a Windows access violation (`0xC0000005`), reported by the user. The unchanged application launched successfully outside that tool restriction, with Electron's own sandbox and context isolation enabled. A repeatable native smoke script now checks two cold starts with separate service ports and clean shutdown. Run it from a normal user terminal, not the restricted tool sandbox.
+
+# Phase 2 implementation review
+
+Reviewed independently along Standards and Spec axes against `517f1a9`, with implementation at `27a81b1`. Scope: API Contract Ambush and Payment Stress Lab.
+
+## Standards
+
+- **P1: delayed mutations could pass before delivery.** A 5-second mutation returned success in roughly 1 second when expected text was already visible. Fixed by counting only finished browser responses, waiting for delivery and browser processing, and checking late browser errors before final persistence. A real-browser regression now observes the delivered response and fails on its fetch-handler exception.
+- **P2: resolved payment paths bypassed ignore rules.** Validation used a placeholder order path. Every actual adapter request now checks the expanded URL before sending. A local-server regression proves zero requests reach a denied order path.
+- **P2: newly derived snapshots retained data covered by updated redaction rules.** New scenario/run/replay snapshots and scenario exports now apply current payload redaction, preserving original historical records. The browser regression verifies run and exported evidence omit a newly sensitive field.
+- **P2: interrupted work permanently blocked deletion.** Runs and matrices now retain owner PIDs. Dead owners are marked interrupted/failed, while live owners block deletion. A CLI recovery path handles legacy records after explicit stopped-runner confirmation. Regression coverage exercises dead, live, and legacy records.
+
+## Spec
+
+- **P1: delayed mutation false pass.** Independently reproduced; addressed by the delivery fix above.
+- **P2: cards associated outcomes by scenario name.** Runs now retain the case ID and snapshot version. Cards require both to match. Rendered-component coverage verifies two same-name cases show different outcomes and an edited case does not show its prior version's result.
+
+Four Standards findings and two Spec findings, all addressed. No material scope creep identified. Fixture-only payment adapters and explicitly selected optional/nullable fields remain documented Phase 2 limits.
